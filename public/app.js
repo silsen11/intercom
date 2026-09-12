@@ -164,19 +164,44 @@ async function handleSignaling(msg) {
   }
 }
 
-// WebRTC P2P
+// WebRTC P2P con soporte para conexiones externas 4G/WAN
 async function createPeerConnection(peerId, nick, isInitiator) {
   if (state.peers.has(peerId)) return state.peers.get(peerId).pc;
 
-  const pc = new RTCPeerConnection({ iceServers: state.iceServers });
-  state.peers.set(peerId, { id: peerId, nick, pc, isTalking: false });
+  const pc = new RTCPeerConnection({
+    iceServers: state.iceServers,
+    iceCandidatePoolSize: 10
+  });
+
+  const peerData = {
+    id: peerId,
+    nick,
+    pc,
+    isTalking: false,
+    pendingCandidates: []
+  };
+
+  state.peers.set(peerId, peerData);
   renderPeers();
 
-  const stream = await getLocalStream();
-  if (stream) {
-    stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+  // Asegurar transceiver bidireccional para recibir audio siempre
+  try {
+    pc.addTransceiver('audio', { direction: 'sendrecv' });
+  } catch (e) {
+    console.warn('[WebRTC] addTransceiver warning:', e);
   }
 
+  // Agregar tracks locales si ya tenemos stream de micrófono
+  const stream = await getLocalStream();
+  if (stream) {
+    stream.getAudioTracks().forEach(t => {
+      try {
+        pc.addTrack(t, stream);
+      } catch (e) {}
+    });
+  }
+
+  // Intercambio de candidatos ICE
   pc.onicecandidate = (e) => {
     if (e.candidate && state.ws?.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({
@@ -189,20 +214,56 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     }
   };
 
+  // Reproducción de audio entrante resistente a políticas de navegador
   pc.ontrack = (e) => {
-    const audio = new Audio();
+    console.log('[WebRTC] Recibiendo audio del compañero:', peerId, nick);
+    let audio = document.getElementById(`audio_${peerId}`);
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.id = `audio_${peerId}`;
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.style.display = 'none';
+      document.body.appendChild(audio);
+    }
     audio.srcObject = e.streams[0];
-    audio.play().catch(() => {});
+
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(err => {
+        console.warn('[WebRTC] Autoplay bloqueado. Desbloqueando en siguiente toque:', err);
+        const unlock = () => {
+          audio.play().catch(() => {});
+          window.removeEventListener('click', unlock);
+          window.removeEventListener('touchstart', unlock);
+        };
+        window.addEventListener('click', unlock, { once: true });
+        window.addEventListener('touchstart', unlock, { once: true });
+      });
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log(`[WebRTC] Estado con ${nick} (${peerId}):`, pc.connectionState);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      removePeer(peerId);
+    }
   };
 
   if (isInitiator) {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    state.ws.send(JSON.stringify({
-      type: 'OFFER',
-      targetId: peerId,
-      sdp: offer.sdp
-    }));
+    try {
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true
+      });
+      await pc.setLocalDescription(offer);
+      state.ws.send(JSON.stringify({
+        type: 'OFFER',
+        targetId: peerId,
+        sdp: offer.sdp
+      }));
+    } catch (err) {
+      console.error('[WebRTC] Error al crear offer:', err);
+    }
   }
 
   return pc;
@@ -210,9 +271,23 @@ async function createPeerConnection(peerId, nick, isInitiator) {
 
 async function handleOffer(msg) {
   const pc = await createPeerConnection(msg.fromId, msg.fromNick, false);
+  const peer = state.peers.get(msg.fromId);
+
   await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+
+  // Aplicar candidatos ICE que hayan llegado antes de la descripción remota
+  if (peer && peer.pendingCandidates.length > 0) {
+    for (const cand of peer.pendingCandidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (err) {}
+    }
+    peer.pendingCandidates = [];
+  }
+
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
+
   state.ws.send(JSON.stringify({
     type: 'ANSWER',
     targetId: msg.fromId,
@@ -222,35 +297,70 @@ async function handleOffer(msg) {
 
 async function handleAnswer(msg) {
   const peer = state.peers.get(msg.fromId);
-  if (peer) {
+  if (peer && peer.pc) {
     await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
+
+    // Aplicar candidatos ICE en cola
+    if (peer.pendingCandidates.length > 0) {
+      for (const cand of peer.pendingCandidates) {
+        try {
+          await peer.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (err) {}
+      }
+      peer.pendingCandidates = [];
+    }
   }
 }
 
 async function handleCandidate(msg) {
   const peer = state.peers.get(msg.fromId);
-  if (peer) {
+  if (!peer) return;
+
+  const candidateData = {
+    candidate: msg.candidate,
+    sdpMid: msg.sdpMid,
+    sdpMLineIndex: msg.sdpMLineIndex
+  };
+
+  // Si la descripción remota aún no está lista, guardar en cola
+  if (!peer.pc.remoteDescription || !peer.pc.remoteDescription.type) {
+    peer.pendingCandidates.push(candidateData);
+  } else {
     try {
-      await peer.pc.addIceCandidate(new RTCIceCandidate({
-        candidate: msg.candidate,
-        sdpMid: msg.sdpMid,
-        sdpMLineIndex: msg.sdpMLineIndex
-      }));
-    } catch (e) {}
+      await peer.pc.addIceCandidate(new RTCIceCandidate(candidateData));
+    } catch (e) {
+      console.warn('[WebRTC] Error al agregar candidato:', e);
+    }
   }
 }
 
 function removePeer(peerId) {
   const peer = state.peers.get(peerId);
   if (peer) {
-    peer.pc.close();
+    try {
+      peer.pc.close();
+    } catch (e) {}
     state.peers.delete(peerId);
     renderPeers();
+  }
+  const audio = document.getElementById(`audio_${peerId}`);
+  if (audio) {
+    audio.srcObject = null;
+    audio.remove();
   }
 }
 
 function cleanupPeers() {
-  state.peers.forEach(p => p.pc.close());
+  state.peers.forEach((p, id) => {
+    try {
+      p.pc.close();
+    } catch (e) {}
+    const audio = document.getElementById(`audio_${id}`);
+    if (audio) {
+      audio.srcObject = null;
+      audio.remove();
+    }
+  });
   state.peers.clear();
   renderPeers();
 }
