@@ -77,17 +77,28 @@ const server = http.createServer((req, res) => {
 
   // Serve PWA Static Files
   const publicDir = path.join(__dirname, '..', 'public');
-  let filePath = path.join(publicDir, req.url === '/' ? 'index.html' : req.url);
+  const parsedUrl = new URL(req.url, 'http://localhost');
+  let cleanPath = parsedUrl.pathname === '/' ? 'index.html' : parsedUrl.pathname.replace(/^\//, '');
+  let filePath = path.join(publicDir, cleanPath);
 
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    const ext = path.extname(filePath);
+    const ext = path.extname(filePath).toLowerCase();
     const contentTypes = {
       '.html': 'text/html; charset=utf-8',
-      '.js': 'application/javascript',
-      '.css': 'text/css',
-      '.json': 'application/json'
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.svg': 'image/svg+xml',
+      '.webp': 'image/webp',
+      '.ico': 'image/x-icon'
     };
-    res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'text/plain' });
+    const headers = { 'Content-Type': contentTypes[ext] || 'text/plain' };
+    if (filePath.endsWith('sw.js')) {
+      headers['Service-Worker-Allowed'] = '/';
+      headers['Cache-Control'] = 'no-cache';
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(filePath).pipe(res);
     return;
   }

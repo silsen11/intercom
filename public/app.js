@@ -1296,5 +1296,89 @@ if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener ===
   });
 }
 
+// ==========================================
+// PWA (PROGRESSIVE WEB APP) & INSTALACIÓN EN ANDROID / MÓVIL
+// ==========================================
+let deferredPrompt = null;
+const pwaInstallBanner = document.getElementById('pwaInstallBanner');
+const btnPwaInstall = document.getElementById('btnPwaInstall');
+const btnSettingsInstall = document.getElementById('btnSettingsInstall');
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+if (isStandalone) {
+  if (pwaInstallBanner) pwaInstallBanner.classList.add('hidden');
+  if (btnSettingsInstall) {
+    btnSettingsInstall.textContent = '✅ App Instalada (Modo Nativo)';
+    btnSettingsInstall.disabled = true;
+    btnSettingsInstall.style.opacity = '0.7';
+  }
+}
+
+// Registrar Service Worker para permitir instalación y caché offline
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then((reg) => {
+        console.log('[PWA] Service Worker registrado exitosamente:', reg.scope);
+      })
+      .catch((err) => {
+        console.warn('[PWA] No se pudo registrar el Service Worker:', err);
+      });
+  });
+}
+
+// Capturar evento de instalación de Chrome / Android
+window.addEventListener('beforeinstallprompt', (e) => {
+  // Prevenir que Chrome muestre su mini-infobar por defecto para usar nuestra UI optimizada para motos
+  e.preventDefault();
+  deferredPrompt = e;
+  console.log('[PWA] Evento beforeinstallprompt capturado. Listo para instalación.');
+
+  if (!isStandalone && pwaInstallBanner) {
+    pwaInstallBanner.classList.remove('hidden');
+  }
+
+  if (btnSettingsInstall && !isStandalone) {
+    btnSettingsInstall.textContent = '📲 Instalar en Pantalla de Inicio';
+    btnSettingsInstall.disabled = false;
+  }
+});
+
+async function triggerPwaInstall() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log('[PWA] Elección del usuario:', outcome);
+    if (outcome === 'accepted') {
+      if (pwaInstallBanner) pwaInstallBanner.classList.add('hidden');
+    }
+    deferredPrompt = null;
+  } else if (isStandalone) {
+    alert('¡RiderCom Mesh Pro ya está instalado y ejecutándose como App nativa!');
+  } else {
+    // Si Chrome aún no disparó el evento o el usuario está en iOS Safari / navegador integrado
+    alert('📲 CÓMO INSTALAR EN TU CELULAR:\n\n1. En Google Chrome (Android):\nToca el botón de opciones arriba a la derecha (los 3 puntos ⋮) y selecciona "Instalar aplicación" o "Agregar a la pantalla principal".\n\n2. En Safari (iPhone / iOS):\nToca el botón de Compartir (icono cuadrado con flecha arriba) y elige "Agregar al inicio".');
+  }
+}
+
+if (btnPwaInstall) {
+  btnPwaInstall.addEventListener('click', triggerPwaInstall);
+}
+
+if (btnSettingsInstall) {
+  btnSettingsInstall.addEventListener('click', triggerPwaInstall);
+}
+
+window.addEventListener('appinstalled', () => {
+  console.log('[PWA] ¡RiderCom se instaló exitosamente en el teléfono!');
+  if (pwaInstallBanner) pwaInstallBanner.classList.add('hidden');
+  if (btnSettingsInstall) {
+    btnSettingsInstall.textContent = '✅ App Instalada';
+    btnSettingsInstall.disabled = true;
+    btnSettingsInstall.style.opacity = '0.7';
+  }
+  deferredPrompt = null;
+});
+
 // Start
 connect();

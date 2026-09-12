@@ -10,6 +10,8 @@ console.log('🔍 Ejecutando linter y verificación de sintaxis...');
 
 const jsFiles = [
   path.join(__dirname, '..', 'server', 'signal-server.js'),
+  path.join(__dirname, '..', 'public', 'sw.js'),
+  path.join(__dirname, 'generate-icons.js'),
   path.join(__dirname, 'lint.js')
 ];
 

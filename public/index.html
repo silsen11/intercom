@@ -6,10 +6,15 @@
   <meta name="theme-color" content="#080c14">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="RiderCom">
   <meta name="description" content="Intercomunicador PTT P2P para motociclistas con WebRTC sobre 4G/5G">
   <title>RiderCom Mesh Pro</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
 </head>
 <body>
   <div class="app-container">
@@ -27,6 +32,18 @@
       </div>
       <button id="btnSettings" class="icon-btn" title="Configurar">⚙️</button>
     </header>
+
+    <!-- PWA INSTALL BANNER -->
+    <div id="pwaInstallBanner" class="pwa-install-banner hidden">
+      <div class="pwa-install-left">
+        <span class="pwa-icon">📲</span>
+        <div>
+          <strong class="pwa-title">Instalar RiderCom</strong>
+          <p class="pwa-subtitle">En tu pantalla de inicio como App nativa</p>
+        </div>
+      </div>
+      <button id="btnPwaInstall" class="btn-pwa-install">INSTALAR</button>
+    </div>
 
     <!-- AUDIO ACTIVATION BANNER -->
     <div id="audioUnlockBanner" class="audio-unlock-banner">
@@ -164,6 +181,12 @@
 
         <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
         <input type="text" id="inputServer" class="input-field" value="">
+
+        <div class="settings-install-section" style="margin-top: 14px;">
+          <label class="input-label">APLICACIÓN MÓVIL:</label>
+          <button id="btnSettingsInstall" class="btn btn-install-app" type="button">📲 Instalar en Pantalla de Inicio</button>
+          <p class="settings-hint">Abre RiderCom a pantalla completa sin barra de navegación, directo desde el escritorio de tu celular.</p>
+        </div>
 
         <div class="modal-actions">
           <button id="btnCancelSettings" class="btn btn-secondary">Cancelar</button>
