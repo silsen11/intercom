@@ -275,6 +275,15 @@ body {
   border-color: #fcd34d;
 }
 
+.ptt-footer-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  width: 100%;
+}
+
 .dsp-indicator {
   display: flex;
   align-items: center;
@@ -282,7 +291,6 @@ body {
   gap: 6px;
   font-size: 11px;
   color: #94a3b8;
-  margin-top: 8px;
   letter-spacing: 0.3px;
 }
 
@@ -293,6 +301,30 @@ body {
   background-color: #10b981;
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
   flex-shrink: 0;
+}
+
+.audio-device-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #38bdf8;
+  cursor: pointer;
+  max-width: 90%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+}
+
+.audio-device-badge:hover {
+  background-color: #334155;
+  border-color: #38bdf8;
 }
 
 /* PEERS SECTION */
@@ -631,15 +663,35 @@ select.input-field {
     flex-shrink: 0;
   }
 
-  .dsp-indicator {
-    font-size: 8.5px;
+  .ptt-footer-badges {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     margin-top: 1px;
-    gap: 4px;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .dsp-indicator {
+    font-size: 8px;
+    margin-top: 0;
+    gap: 3px;
   }
 
   .dsp-dot {
-    width: 5px;
-    height: 5px;
+    width: 4.5px;
+    height: 4.5px;
+  }
+
+  .audio-device-badge {
+    font-size: 7.5px;
+    padding: 1.5px 5px;
+    margin-top: 0;
+    gap: 3px;
+    border-radius: 6px;
+    max-width: 50%;
   }
 
   /* 5. COLUMNA DERECHA: Lista de Pilotos */

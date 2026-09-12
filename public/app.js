@@ -36,6 +36,8 @@ const state = {
   gateGainNode: null,    // Puerta de ruido (Noise Gate)
   analyserNode: null,    // Analizador de nivel para VAD (Voice Activity Detection)
   dspMode: localStorage.getItem('ridercom_dsp') || 'standard',
+  selectedAudioInputId: localStorage.getItem('ridercom_input_device') || '',
+  selectedAudioOutputId: localStorage.getItem('ridercom_output_device') || '',
   vadInterval: null,
   vadTalking: false,
   ws: null,
@@ -120,6 +122,157 @@ function optimizeOpusSdp(sdp) {
   }
 }
 
+// Detección y Gestión de Dispositivos de Audio / Cascos Bluetooth
+function isBluetoothDevice(label) {
+  if (!label) return false;
+  const l = label.toLowerCase();
+  return (
+    l.includes('bluetooth') ||
+    l.includes('headset') ||
+    l.includes('hands-free') ||
+    l.includes('manos libres') ||
+    l.includes('inalámbrico') ||
+    l.includes('wireless') ||
+    l.includes('cardo') ||
+    l.includes('sena') ||
+    l.includes('freedconn') ||
+    l.includes('airpods') ||
+    l.includes('tws') ||
+    l.includes('auricular') ||
+    l.includes('intercom')
+  );
+}
+
+async function refreshAudioDevices() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    return;
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter((d) => d.kind === 'audioinput');
+    const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');
+
+    const elSelectInput = document.getElementById('selectAudioInput');
+    const elSelectOutput = document.getElementById('selectAudioOutput');
+
+    if (elSelectInput) {
+      elSelectInput.innerHTML = '';
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'Predeterminado del Sistema';
+      elSelectInput.appendChild(defaultOpt);
+
+      let detectedBtInput = null;
+
+      audioInputs.forEach((dev, index) => {
+        const opt = document.createElement('option');
+        opt.value = dev.deviceId;
+        const label = dev.label || `Micrófono ${index + 1}`;
+        const isBt = isBluetoothDevice(label);
+        opt.textContent = isBt ? `🎧 ${label} (Bluetooth)` : `🎤 ${label}`;
+        elSelectInput.appendChild(opt);
+
+        if (isBt && !detectedBtInput) {
+          detectedBtInput = dev.deviceId;
+        }
+      });
+
+      // Auto-selección preferente de Bluetooth si está conectado y no se ha fijado otro
+      if (!state.selectedAudioInputId && detectedBtInput) {
+        state.selectedAudioInputId = detectedBtInput;
+      }
+
+      if (state.selectedAudioInputId) {
+        elSelectInput.value = state.selectedAudioInputId;
+      }
+    }
+
+    if (elSelectOutput) {
+      elSelectOutput.innerHTML = '';
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'Predeterminado del Sistema';
+      elSelectOutput.appendChild(defaultOpt);
+
+      let detectedBtOutput = null;
+
+      audioOutputs.forEach((dev, index) => {
+        const opt = document.createElement('option');
+        opt.value = dev.deviceId;
+        const label = dev.label || `Altavoz ${index + 1}`;
+        const isBt = isBluetoothDevice(label);
+        opt.textContent = isBt ? `🎧 ${label} (Bluetooth)` : `🔊 ${label}`;
+        elSelectOutput.appendChild(opt);
+
+        if (isBt && !detectedBtOutput) {
+          detectedBtOutput = dev.deviceId;
+        }
+      });
+
+      if (!state.selectedAudioOutputId && detectedBtOutput) {
+        state.selectedAudioOutputId = detectedBtOutput;
+      }
+
+      if (state.selectedAudioOutputId) {
+        elSelectOutput.value = state.selectedAudioOutputId;
+      }
+    }
+
+    updateActiveDeviceBadge(audioInputs);
+  } catch (err) {
+    console.warn('[Audio] Error enumerando dispositivos:', err);
+  }
+}
+
+function updateActiveDeviceBadge(audioInputs) {
+  const elBadge = document.getElementById('audioDeviceLabel');
+  const elIcon = document.getElementById('audioDeviceIcon');
+  if (!elBadge || !elIcon) return;
+
+  const currentDev = audioInputs?.find((d) => d.deviceId === state.selectedAudioInputId);
+  const label = currentDev?.label || '';
+
+  if (isBluetoothDevice(label)) {
+    elIcon.textContent = '🎧';
+    const cleanName = label.replace(/(\(.*\)|bluetooth)/gi, '').trim() || 'Conectado';
+    elBadge.textContent = `Bluetooth: ${cleanName.length > 20 ? cleanName.substring(0, 18) + '..' : cleanName}`;
+  } else if (label) {
+    elIcon.textContent = '🎤';
+    elBadge.textContent = label.length > 22 ? `${label.substring(0, 19)}...` : label;
+  } else {
+    const anyBt = audioInputs?.find((d) => isBluetoothDevice(d.label));
+    if (anyBt) {
+      elIcon.textContent = '🎧';
+      elBadge.textContent = 'Bluetooth detectado';
+    } else {
+      elIcon.textContent = '📱';
+      elBadge.textContent = 'Audio: Teléfono / Sistema';
+    }
+  }
+}
+
+async function switchAudioInput(deviceId) {
+  state.selectedAudioInputId = deviceId;
+  localStorage.setItem('ridercom_input_device', deviceId);
+  console.log(`[Audio] Cambiando micrófono a deviceId: ${deviceId || 'default'}`);
+  await getLocalStream(deviceId);
+}
+
+async function switchAudioOutput(deviceId) {
+  state.selectedAudioOutputId = deviceId;
+  localStorage.setItem('ridercom_output_device', deviceId);
+  console.log(`[Audio] Cambiando salida a deviceId: ${deviceId || 'default'}`);
+
+  document.querySelectorAll('audio').forEach((audio) => {
+    if (typeof audio.setSinkId === 'function') {
+      audio.setSinkId(deviceId).catch((err) => {
+        console.warn('[Audio] Error aplicando setSinkId:', err);
+      });
+    }
+  });
+}
+
 // Auto-detect server URL from current host
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 state.serverUrl = `${protocol}//${window.location.host}`;
@@ -142,6 +295,7 @@ const elPeersTotal = document.getElementById('peersTotal');
 const elModal = document.getElementById('settingsModal');
 const elUnlockBanner = document.getElementById('audioUnlockBanner');
 const elBtnUnlock = document.getElementById('btnUnlockAudio');
+const elDeviceBadge = document.getElementById('btnDeviceBadge');
 
 // Init fields
 elRoom.textContent = state.room;
@@ -150,32 +304,45 @@ document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
 applyDspProfile(state.dspMode);
+refreshAudioDevices();
 
 // Setup Mic Stream & Web Audio DSP Engine
-async function getLocalStream() {
-  if (state.localStream && state.localStream.active) {
+async function getLocalStream(forceDeviceId) {
+  const targetDeviceId = forceDeviceId !== undefined ? forceDeviceId : state.selectedAudioInputId;
+
+  if (!forceDeviceId && state.localStream && state.localStream.active) {
     const tracks = state.localStream.getAudioTracks();
     if (tracks.length > 0 && tracks[0].readyState === 'live') {
       return state.localStream;
     }
   }
 
+  // Detener micrófono anterior si se está cambiando de dispositivo
+  if (state.rawMicStream) {
+    state.rawMicStream.getTracks().forEach((t) => t.stop());
+    state.rawMicStream = null;
+  }
+
   try {
-    // Restricciones de audio de nivel empresarial (Teams / Meet)
+    const audioConstraints = {
+      channelCount: { ideal: 1 }, // Mono estricto para activar AEC en Android
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      googEchoCancellation: { ideal: true },
+      googAutoGainControl: { ideal: true },
+      googNoiseSuppression: { ideal: true },
+      googHighpassFilter: { ideal: true },
+      googTypingNoiseDetection: { ideal: true },
+      googAudioMirroring: { ideal: false }
+    };
+
+    if (targetDeviceId) {
+      audioConstraints.deviceId = { ideal: targetDeviceId };
+    }
+
     const rawStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: { ideal: 1 }, // Mono estricto para activar AEC en Android
-        echoCancellation: { ideal: true },
-        noiseSuppression: { ideal: true },
-        autoGainControl: { ideal: true },
-        // Flags WebKit / Chrome
-        googEchoCancellation: { ideal: true },
-        googAutoGainControl: { ideal: true },
-        googNoiseSuppression: { ideal: true },
-        googHighpassFilter: { ideal: true },
-        googTypingNoiseDetection: { ideal: true },
-        googAudioMirroring: { ideal: false }
-      },
+      audio: audioConstraints,
       video: false
     });
 
@@ -191,13 +358,20 @@ async function getLocalStream() {
       ctx.resume().catch(() => {});
     }
 
-    // Desconectar fuente previa si existía
+    // Desconectar fuente previa
     if (state.dspSource) {
       try { state.dspSource.disconnect(); } catch (e) {}
     }
 
     const source = ctx.createMediaStreamSource(rawStream);
     state.dspSource = source;
+
+    // Si la cadena DSP ya existe (cambio de dispositivo en vivo), reconectar a highpass
+    if (state.highpassNode && state.localStream) {
+      source.connect(state.highpassNode);
+      await refreshAudioDevices();
+      return state.localStream;
+    }
 
     const prof = DSP_PROFILES[state.dspMode] || DSP_PROFILES.standard;
 
@@ -281,9 +455,12 @@ async function getLocalStream() {
       elUnlockBanner.classList.add('hidden');
     }
 
+    // Refrescar nombres y etiquetas de dispositivos con los permisos otorgados
+    await refreshAudioDevices();
+
     return processedStream;
   } catch (err) {
-    console.warn('[Audio] Esperando permiso del micrófono:', err);
+    console.warn('[Audio] Error al obtener audio del micrófono:', err);
     return null;
   }
 }
@@ -549,6 +726,9 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     }
     if (audio.srcObject !== e.streams[0]) {
       audio.srcObject = e.streams[0];
+    }
+    if (typeof audio.setSinkId === 'function' && state.selectedAudioOutputId) {
+      audio.setSinkId(state.selectedAudioOutputId).catch(() => {});
     }
     audio.play().catch((err) => {
       console.warn(`[WebRTC] Autoplay pendiente para ${peerId}:`, err);
@@ -836,13 +1016,19 @@ elLockBtn.addEventListener('click', () => {
 // Settings Modal
 document.getElementById('btnSettings').addEventListener('click', () => {
   elModal.classList.remove('hidden');
+  refreshAudioDevices();
+});
+
+document.getElementById('btnDeviceBadge')?.addEventListener('click', () => {
+  elModal.classList.remove('hidden');
+  refreshAudioDevices();
 });
 
 document.getElementById('btnCancelSettings').addEventListener('click', () => {
   elModal.classList.add('hidden');
 });
 
-document.getElementById('btnSaveSettings').addEventListener('click', () => {
+document.getElementById('btnSaveSettings').addEventListener('click', async () => {
   state.room = document.getElementById('inputRoom').value.trim().toUpperCase() || 'RUTA-77';
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
@@ -852,12 +1038,31 @@ document.getElementById('btnSaveSettings').addEventListener('click', () => {
     applyDspProfile(selectedDsp);
   }
 
+  const selectedInput = document.getElementById('selectAudioInput')?.value ?? '';
+  const selectedOutput = document.getElementById('selectAudioOutput')?.value ?? '';
+
+  if (selectedOutput !== state.selectedAudioOutputId) {
+    switchAudioOutput(selectedOutput);
+  }
+
+  if (selectedInput !== state.selectedAudioInputId) {
+    await switchAudioInput(selectedInput);
+  }
+
   elRoom.textContent = state.room;
   elNick.textContent = state.nick;
   elModal.classList.add('hidden');
 
   if (state.ws) state.ws.close();
 });
+
+// Escuchar conexión y desconexión de auriculares / intercomunicadores Bluetooth
+if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+  navigator.mediaDevices.addEventListener('devicechange', async () => {
+    console.log('[Audio] Cambio en dispositivos de audio detectado (Bluetooth conectado/desconectado)');
+    await refreshAudioDevices();
+  });
+}
 
 // Start
 connect();

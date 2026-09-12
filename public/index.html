@@ -74,9 +74,16 @@
         🔒 Fijar Manos Libres
       </button>
 
-      <div class="dsp-indicator">
-        <span class="dsp-dot"></span>
-        <span id="dspLabel">Supresión DSP: Equilibrado</span>
+      <div class="ptt-footer-badges">
+        <div class="dsp-indicator">
+          <span class="dsp-dot"></span>
+          <span id="dspLabel">DSP: Equilibrado</span>
+        </div>
+
+        <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
+          <span id="audioDeviceIcon">🎧</span>
+          <span id="audioDeviceLabel">Audio: Predeterminado</span>
+        </div>
       </div>
     </main>
 
@@ -101,6 +108,22 @@
 
         <label class="input-label" for="inputNick">TU APODO DE PILOTO:</label>
         <input type="text" id="inputNick" class="input-field" value="Piloto Alfa" maxlength="20">
+
+        <!-- SELECTOR DE DISPOSITIVOS DE AUDIO / BLUETOOTH -->
+        <label class="input-label" for="selectAudioInput">🎤 MICRÓFONO / CASCO BLUETOOTH:</label>
+        <select id="selectAudioInput" class="input-field">
+          <option value="">Predeterminado del Sistema</option>
+        </select>
+        <p class="settings-hint" id="bluetoothHint">
+          💡 Selecciona tu intercomunicador Bluetooth (Cardo, Sena, TWS) para hablar desde el micrófono del casco.
+        </p>
+
+        <div id="rowAudioOutput">
+          <label class="input-label" for="selectAudioOutput">🔊 SALIDA DE AUDIO (ALTAVOZ / AURICULARES):</label>
+          <select id="selectAudioOutput" class="input-field">
+            <option value="">Predeterminado del Sistema</option>
+          </select>
+        </div>
 
         <label class="input-label" for="selectNoiseSuppression">SUPRESIÓN DE RUIDO Y RETORNO (DSP):</label>
         <select id="selectNoiseSuppression" class="input-field">
