@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#080c14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Intercomunicador PTT P2P para motociclistas con WebRTC sobre 4G/5G">
+  <title>RiderCom Mesh Pro</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.json">
+</head>
+<body>
+  <div class="app-container">
+    <!-- HEADER -->
+    <header class="header">
+      <div class="brand">
+        <span class="logo-icon">🏍️</span>
+        <div class="brand-text">
+          <div class="title-row">
+            <h1 class="brand-title">RiderCom</h1>
+            <span class="badge">MESH PRO</span>
+          </div>
+          <p class="brand-subtitle">Intercomunicador PTT P2P</p>
+        </div>
+      </div>
+      <button id="btnSettings" class="icon-btn" title="Configurar">⚙️</button>
+    </header>
+
+    <!-- STATUS BAR -->
+    <div class="status-bar">
+      <div class="status-top">
+        <div class="pill">
+          <span class="pill-label">SALA</span>
+          <span id="displayRoom" class="pill-value">RUTA-77</span>
+        </div>
+        <div class="connection-status">
+          <span id="statusDot" class="status-dot dot-disconnected"></span>
+          <span id="statusText" class="status-label">CONECTANDO...</span>
+        </div>
+        <div class="pill">
+          <span class="pill-label">LATENCIA</span>
+          <span id="displayLatency" class="pill-value">-- ms</span>
+        </div>
+      </div>
+      <div class="status-bottom">
+        <span class="pilot-info">Piloto: <strong id="displayNick">Piloto Alfa</strong></span>
+        <span id="displayCount" class="pilots-count">👥 1 en ruta</span>
+      </div>
+    </div>
+
+    <!-- MAIN PTT SECTION -->
+    <main class="ptt-section">
+      <div class="ptt-header">
+        <h2 id="pttTitle" class="ptt-title">⚪ EN ESPERA</h2>
+        <p id="pttSubtitle" class="ptt-subtitle">Mantén presionado para hablar (doble toque = manos libres)</p>
+      </div>
+
+      <button id="pttButton" class="ptt-button" type="button">
+        <div class="mic-circle">
+          <span id="micIcon" class="mic-icon">🎙️</span>
+        </div>
+        <span id="pttLabel" class="ptt-label">PTT HABLAR</span>
+      </button>
+
+      <button id="btnToggleLock" class="lock-btn" type="button">
+        🔒 Fijar Manos Libres
+      </button>
+    </main>
+
+    <!-- PEERS LIST -->
+    <section class="peers-section">
+      <div class="peers-header">
+        <span class="peers-title">🏍️ PILOTOS EN RUTA</span>
+        <span id="peersTotal" class="peers-counter">1 conectado</span>
+      </div>
+      <div id="peersList" class="peers-list">
+        <!-- Peers se renderizan dinámicamente -->
+      </div>
+    </section>
+
+    <!-- SETTINGS MODAL -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-content">
+        <h3 class="modal-title">⚙️ Configuración de Ruta</h3>
+        
+        <label class="input-label" for="inputRoom">CÓDIGO DE SALA:</label>
+        <input type="text" id="inputRoom" class="input-field" value="RUTA-77" maxlength="15">
+
+        <label class="input-label" for="inputNick">TU APODO DE PILOTO:</label>
+        <input type="text" id="inputNick" class="input-field" value="Piloto Alfa" maxlength="20">
+
+        <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
+        <input type="text" id="inputServer" class="input-field" value="">
+
+        <div class="modal-actions">
+          <button id="btnCancelSettings" class="btn btn-secondary">Cancelar</button>
+          <button id="btnSaveSettings" class="btn btn-primary">Guardar y Conectar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

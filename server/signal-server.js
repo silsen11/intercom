@@ -31,7 +31,10 @@ const rooms = new Map();
 // Client reverse lookup: ws -> { roomId: string, id: string, nick: string }
 const clients = new Map();
 
-// HTTP server for health-checks, status, and ping
+const fs = require('fs');
+const path = require('path');
+
+// HTTP server for health-checks, status, and PWA client
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -61,8 +64,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Serve PWA Static Files
+  const publicDir = path.join(__dirname, '..', 'public');
+  let filePath = path.join(publicDir, req.url === '/' ? 'index.html' : req.url);
+
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+    const ext = path.extname(filePath);
+    const contentTypes = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript',
+      '.css': 'text/css',
+      '.json': 'application/json'
+    };
+    res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'text/plain' });
+    fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('🏍️ RiderCom Mesh Pro - Servidor de Señalización Activo');
+  res.end('🏍️ RiderCom Mesh Pro - Servidor Activo');
 });
 
 // WebSocket Server
