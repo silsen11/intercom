@@ -102,11 +102,6 @@
           <span id="audioDeviceIcon">🎧</span>
           <span id="audioDeviceLabel">Audio: Predeterminado</span>
         </div>
-
-        <div id="btnVolumeBadge" class="volume-indicator-badge" title="Toca para alternar volumen del casco (100% / 150% / 200% / 250%)">
-          <span id="volumeBadgeIcon">🔊</span>
-          <span id="volumeBadgeLabel">Vol: 150% (Fuerte)</span>
-        </div>
       </div>
     </main>
 
@@ -146,28 +141,6 @@
           <select id="selectAudioOutput" class="input-field">
             <option value="">Predeterminado del Sistema</option>
           </select>
-        </div>
-
-        <!-- VOLUMEN DEL INTERCOMUNICADOR Y BOOST CASCO -->
-        <div class="volume-settings-group">
-          <div class="volume-header-row">
-            <label class="input-label" for="sliderVolume" style="margin-bottom:0;">
-              🔊 VOLUMEN INTERCOM / CASCO:
-            </label>
-            <span id="volumeValueLabel" class="volume-badge">150% (Boost Moto)</span>
-          </div>
-          <div class="volume-slider-wrap">
-            <input type="range" id="sliderVolume" min="50" max="300" step="5" value="150" class="volume-slider">
-          </div>
-          <div class="volume-presets">
-            <button type="button" class="btn-vol-preset" data-vol="100">100% Normal</button>
-            <button type="button" class="btn-vol-preset active" data-vol="150">150% Fuerte</button>
-            <button type="button" class="btn-vol-preset" data-vol="200">200% Casco</button>
-            <button type="button" class="btn-vol-preset" data-vol="250">250% Turbo</button>
-          </div>
-          <p class="settings-hint">
-            🚀 <strong>Boost Digital para Cascos</strong>: Amplifica el volumen recibido con compresor dinámico anti-distorsión, para escuchar fuerte y claro a tus compañeros incluso con ruido de viento en carretera.
-          </p>
         </div>
 
         <label class="input-label" for="selectHandsFreeMode">MODO AL FIJAR MANOS LIBRES:</label>
