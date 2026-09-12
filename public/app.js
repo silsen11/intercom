@@ -17,7 +17,8 @@ const state = {
   ],
   localStream: null,
   ws: null,
-  myId: null
+  myId: null,
+  audioMode: localStorage.getItem('ridercom_audio_mode') || 'p2p'
 };
 
 // Auto-detect server URL from current host
@@ -42,6 +43,32 @@ const elPeersTotal = document.getElementById('peersTotal');
 const elModal = document.getElementById('settingsModal');
 const elUnlockBanner = document.getElementById('audioUnlockBanner');
 const elBtnUnlock = document.getElementById('btnUnlockAudio');
+const elAudioMode = document.getElementById('displayAudioMode');
+const elSelectAudioMode = document.getElementById('selectAudioMode');
+
+function updateAudioModeUI() {
+  if (elSelectAudioMode) elSelectAudioMode.value = state.audioMode;
+  if (elAudioMode) {
+    if (state.audioMode === 'p2p') {
+      elAudioMode.textContent = '⚡ P2P';
+      elAudioMode.title = 'Modo WebRTC P2P Directo (Tiempo Real - Cero Eco)';
+    } else if (state.audioMode === 'relay') {
+      elAudioMode.textContent = '🌐 RELAY';
+      elAudioMode.title = 'Modo Servidor Relay 4G (Garantizado)';
+    } else {
+      elAudioMode.textContent = '🔄 AUTO';
+      elAudioMode.title = 'Modo Híbrido Inteligente (P2P + Respaldo 4G)';
+    }
+  }
+
+  // Si se activa modo relay, silenciar audio WebRTC para evitar eco
+  state.peers.forEach((peer, id) => {
+    const audioEl = document.getElementById(`audio_${id}`);
+    if (audioEl) {
+      audioEl.muted = (state.audioMode === 'relay');
+    }
+  });
+}
 
 // Init fields
 elRoom.textContent = state.room;
@@ -49,6 +76,7 @@ elNick.textContent = state.nick;
 document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
+updateAudioModeUI();
 
 // Setup Mic Stream & Unlock Mobile Audio
 async function getLocalStream() {
@@ -273,6 +301,7 @@ async function createPeerConnection(peerId, nick, isInitiator) {
       audio.style.display = 'none';
       document.body.appendChild(audio);
     }
+    audio.muted = (state.audioMode === 'relay');
     audio.srcObject = e.streams[0];
     audio.play().catch(() => {});
   };
@@ -434,7 +463,7 @@ function renderPeers() {
 }
 
 // ==========================================
-// DUAL AUDIO ENGINE: PTT + WEBSOCKET RELAY
+// AUDIO ENGINE: PTT + TRANSMISSION MODES
 // ==========================================
 let mediaRecorder = null;
 let recordedChunks = [];
@@ -443,25 +472,31 @@ async function startTalk() {
   const stream = await getLocalStream();
   if (!stream) return;
 
-  // 1. Activar track WebRTC P2P
-  stream.getAudioTracks().forEach((t) => (t.enabled = true));
+  // 1. Activar track WebRTC P2P (si no está en modo solo relay)
+  if (state.audioMode !== 'relay') {
+    stream.getAudioTracks().forEach((t) => (t.enabled = true));
+  } else {
+    stream.getAudioTracks().forEach((t) => (t.enabled = false));
+  }
 
-  // 2. Iniciar grabadora de respaldo garantizado por WebSocket
-  try {
-    recordedChunks = [];
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '');
+  // 2. Iniciar grabadora WebSocket (solo si está en relay o auto)
+  if (state.audioMode !== 'p2p') {
+    try {
+      recordedChunks = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '');
 
-    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        recordedChunks.push(e.data);
-      }
-    };
-    mediaRecorder.start(100);
-  } catch (err) {
-    console.warn('[PTT] MediaRecorder init error:', err);
+      mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          recordedChunks.push(e.data);
+        }
+      };
+      mediaRecorder.start(100);
+    } catch (err) {
+      console.warn('[PTT] MediaRecorder init error:', err);
+    }
   }
 
   state.isTransmitting = true;
@@ -478,8 +513,8 @@ function stopTalk() {
     state.localStream.getAudioTracks().forEach((t) => (t.enabled = false));
   }
 
-  // 2. Detener grabadora y retransmitir por WebSocket (garantizado en 4G)
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+  // Detener grabadora y retransmitir por WebSocket (solo si NO es p2p puro)
+  if (state.audioMode !== 'p2p' && mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.onstop = () => {
       if (recordedChunks.length > 0) {
         const mimeType = mediaRecorder.mimeType || 'audio/webm';
@@ -511,9 +546,24 @@ function stopTalk() {
   }
 }
 
-// Reproducir audio recibido por WebSocket (garantizado sobre cualquier red 4G/5G)
+// Reproducir audio recibido por WebSocket (según modo configurado)
 function handleIncomingAudio(msg) {
   if (msg.fromId === state.myId) return;
+
+  // Si el usuario eligió P2P puro, ignorar cualquier audio duplicado de WebSocket
+  if (state.audioMode === 'p2p') {
+    return;
+  }
+
+  // Si estamos en modo AUTO, descartar si el par ya está conectado vía WebRTC
+  if (state.audioMode === 'auto') {
+    const peer = state.peers.get(msg.fromId);
+    const isP2pConnected = peer && peer.pc && (peer.pc.connectionState === 'connected' || peer.pc.iceConnectionState === 'connected');
+    if (isP2pConnected) {
+      // Ya se escuchó en vivo por P2P: descartar para evitar eco
+      return;
+    }
+  }
 
   setPeerTalking(msg.fromId, true);
 
@@ -602,6 +652,12 @@ document.getElementById('btnSaveSettings').addEventListener('click', () => {
   state.room = document.getElementById('inputRoom').value.trim().toUpperCase() || 'RUTA-77';
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
+
+  if (elSelectAudioMode) {
+    state.audioMode = elSelectAudioMode.value || 'p2p';
+    localStorage.setItem('ridercom_audio_mode', state.audioMode);
+    updateAudioModeUI();
+  }
 
   elRoom.textContent = state.room;
   elNick.textContent = state.nick;

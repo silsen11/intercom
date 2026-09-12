@@ -51,7 +51,7 @@
         </div>
       </div>
       <div class="status-bottom">
-        <span class="pilot-info">Piloto: <strong id="displayNick">Piloto Alfa</strong></span>
+        <span class="pilot-info">Piloto: <strong id="displayNick">Piloto Alfa</strong> <span id="displayAudioMode" class="mode-badge" title="Modo de Audio">⚡ P2P</span></span>
         <span id="displayCount" class="pilots-count">👥 1 en ruta</span>
       </div>
     </div>
@@ -99,6 +99,13 @@
 
         <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
         <input type="text" id="inputServer" class="input-field" value="">
+
+        <label class="input-label" for="selectAudioMode">MODO DE TRANSMISIÓN DE AUDIO:</label>
+        <select id="selectAudioMode" class="input-field">
+          <option value="p2p">⚡ WebRTC P2P (Tiempo Real - Cero Eco)</option>
+          <option value="relay">🌐 Servidor Relay 4G (Garantizado sin P2P)</option>
+          <option value="auto">🔄 Híbrido Inteligente (P2P + Respaldo 4G)</option>
+        </select>
 
         <div class="modal-actions">
           <button id="btnCancelSettings" class="btn btn-secondary">Cancelar</button>
