@@ -137,10 +137,6 @@ function handleMessage(ws, msg, clientId) {
       handleTalkState(ws, msg);
       break;
 
-    case 'AUDIO_DATA':
-      relayAudio(ws, msg);
-      break;
-
     case 'PING':
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'PONG', ts: msg.ts, serverTime: Date.now() }));
@@ -263,25 +259,6 @@ function handleTalkState(ws, msg) {
   });
 }
 
-function relayAudio(ws, msg) {
-  const sender = clients.get(ws);
-  if (!sender) return;
-
-  const room = rooms.get(sender.roomId);
-  if (!room) return;
-
-  // Difundir audio comprimido a todos los compañeros en la sala
-  room.forEach((info, peerWs) => {
-    if (peerWs !== ws && peerWs.readyState === WebSocket.OPEN) {
-      peerWs.send(JSON.stringify({
-        type: 'AUDIO_DATA',
-        fromId: sender.id,
-        fromNick: sender.nick,
-        audio: msg.audio
-      }));
-    }
-  });
-}
 
 function handleDisconnect(ws) {
   const client = clients.get(ws);
