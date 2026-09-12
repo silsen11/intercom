@@ -17,17 +17,22 @@ const state = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    { urls: 'stun:stun.relay.metered.ca:80' }
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ],
   localStream: null,         // MediaStream nativo directo hacia WebRTC (Bluetooth SCO)
   analyserTrack: null,       // Track clonado independiente para que el analizador nunca se silencie
   audioCtx: null,            // AudioContext en memoria exclusivamente para análisis acústico
   voxSourceNode: null,
-  relayProcessorNode: null,  // Nodo de captura y transmisión de audio sobre WebSocket (Redes 4G)
   analyserNode: null,
   voxMode: localStorage.getItem('ridercom_vox_mode') || 'standard',
   selectedAudioInputId: localStorage.getItem('ridercom_input_device') || '',
@@ -473,15 +478,15 @@ async function getLocalStream(forceDeviceId) {
     // Vincular track directo a todos los pares ya conectados
     state.peers.forEach((peer) => {
       if (peer.pc && peer.pc.signalingState !== 'closed') {
-        const audioTrack = stream.getAudioTracks()[0];
-        if (audioTrack) {
-          const sender = peer.pc.getSenders().find((s) => s.track || s.kind === 'audio');
-          if (sender) {
-            sender.replaceTrack(audioTrack).catch(() => {});
-          } else {
-            try { peer.pc.addTrack(audioTrack, stream); } catch (e) {}
+        const senders = peer.pc.getSenders();
+        stream.getAudioTracks().forEach((t) => {
+          const alreadyAdded = senders.some((s) => s.track === t);
+          if (!alreadyAdded) {
+            try {
+              peer.pc.addTrack(t, stream);
+            } catch (e) {}
           }
-        }
+        });
       }
     });
 
@@ -534,7 +539,6 @@ function connect() {
 
   try {
     const ws = new WebSocket(state.serverUrl);
-    ws.binaryType = 'arraybuffer';
     state.ws = ws;
 
     ws.onopen = () => {
@@ -548,12 +552,6 @@ function connect() {
     };
 
     ws.onmessage = async (e) => {
-      // Paquete de audio binario en tiempo real (4G / Nube / Relay)
-      if (e.data instanceof ArrayBuffer || (typeof Blob !== 'undefined' && e.data instanceof Blob)) {
-        await handleIncomingAudioBinary(e.data);
-        return;
-      }
-
       try {
         const msg = JSON.parse(e.data);
         await handleSignaling(msg);
@@ -651,33 +649,20 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     nick,
     pc,
     isTalking: false,
-    isP2pConnected: false,
-    hasIncomingRtpAudio: false,
-    lastRelayAudioTime: 0,
-    relayTalkTimeout: null,
     pendingCandidates: []
   };
 
   state.peers.set(peerId, peerData);
   renderPeers();
 
-  // Asegurar transceiver de audio para que la negociación WebRTC reserve canal de voz siempre
-  try {
-    pc.addTransceiver('audio', { direction: 'sendrecv' });
-  } catch (e) {}
-
-  // Vincular pista de micrófono si ya está disponible
+  // Vincular tracks locales de forma limpia (sin addTransceiver redundante)
   const stream = await getLocalStream();
   if (stream) {
-    const audioTrack = stream.getAudioTracks()[0];
-    if (audioTrack) {
-      const sender = pc.getSenders().find((s) => s.track || s.kind === 'audio');
-      if (sender) {
-        sender.replaceTrack(audioTrack).catch(() => {});
-      } else {
-        try { pc.addTrack(audioTrack, stream); } catch (e) {}
-      }
-    }
+    stream.getAudioTracks().forEach((t) => {
+      try {
+        pc.addTrack(t, stream);
+      } catch (e) {}
+    });
   }
 
   // Candidatos ICE
@@ -693,13 +678,9 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     }
   };
 
-  // Reproducción de audio entrante WebRTC
+  // Reproducción de audio entrante
   pc.ontrack = (e) => {
-    console.log(`[WebRTC] Recibiendo audio P2P directo del piloto: ${nick} (${peerId})`);
-    peerData.hasIncomingRtpAudio = true;
-    peerData.isP2pConnected = true;
-    renderPeers();
-
+    console.log(`[WebRTC] Recibiendo audio del piloto: ${nick} (${peerId})`);
     let audio = document.getElementById(`audio_${peerId}`);
     if (!audio) {
       audio = document.createElement('audio');
@@ -718,37 +699,20 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     audio.play().catch((err) => {
       console.warn(`[WebRTC] Autoplay pendiente para ${peerId}:`, err);
     });
-
-    // Enviar también al AudioContext activo para eludir restricciones de autoplay en móviles
-    if (state.audioCtx && state.audioCtx.state === 'running') {
-      try {
-        const rtpSource = state.audioCtx.createMediaStreamSource(e.streams[0]);
-        rtpSource.connect(state.audioCtx.destination);
-      } catch (err) {}
-    }
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`[WebRTC] Estado P2P con ${nick} (${peerId}): ${pc.connectionState}`);
-    peerData.isP2pConnected = (pc.connectionState === 'connected');
-    renderPeers();
+    console.log(`[WebRTC] Conexión con ${nick} (${peerId}): ${pc.connectionState}`);
     if (pc.connectionState === 'closed') {
       removePeer(peerId);
     } else if (pc.connectionState === 'failed') {
-      console.warn(`[WebRTC] Conexión P2P no alcanzable con ${peerId} (usando Relay Seguro 4G)...`);
-      peerData.isP2pConnected = false;
-      renderPeers();
+      console.warn(`[WebRTC] Conexión fallida con ${peerId}, intentando ICE restart...`);
       if (isInitiator && typeof pc.restartIce === 'function') {
         try {
           pc.restartIce();
         } catch (e) {}
       }
     }
-  };
-
-  pc.oniceconnectionstatechange = () => {
-    peerData.isP2pConnected = (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed');
-    renderPeers();
   };
 
   if (isInitiator) {
@@ -897,19 +861,17 @@ function renderPeers() {
   `;
 
   state.peers.forEach((peer) => {
-    const netLabel = peer.isP2pConnected ? '⚡ P2P Directo' : '🌐 Relay 4G';
-    const netClass = peer.isP2pConnected ? 'badge-p2p' : 'badge-relay';
     html += `
       <div class="peer-item ${peer.isTalking ? 'talking' : ''}">
         <div class="peer-left">
           <span style="font-size:20px">${peer.isTalking ? '📢' : '👤'}</span>
           <div>
-            <div class="peer-name">${peer.nick} <span class="net-pill ${netClass}">${netLabel}</span></div>
-            <div class="peer-subtext">${peer.isTalking ? 'Hablando ahora...' : (peer.isP2pConnected ? 'Malla P2P Directa' : 'Enlace Seguro 4G/Nube')}</div>
+            <div class="peer-name">${peer.nick}</div>
+            <div class="peer-subtext">${peer.isTalking ? 'Hablando ahora...' : 'En escucha'}</div>
           </div>
         </div>
         <span class="peer-badge ${peer.isTalking ? 'talking' : ''}">
-          ${peer.isTalking ? '🔊 HABLANDO' : '● En ruta'}
+          ${peer.isTalking ? '🔊 HABLANDO' : '● Conectado'}
         </span>
       </div>
     `;
@@ -919,215 +881,10 @@ function renderPeers() {
 }
 
 // ==========================================
-// CODEC ADPCM & RETRANSMISIÓN DE AUDIO 4G / WIFI (WEBSOCKET RELAY)
-// ==========================================
-const ADPCM_INDEX_TABLE = [
-  -1, -1, -1, -1, 2, 4, 6, 8,
-  -1, -1, -1, -1, 2, 4, 6, 8
-];
-
-const ADPCM_STEP_TABLE = [
-  7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
-  19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
-  50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
-  130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
-  337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
-  876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
-  2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
-  5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
-  15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
-];
-
-function encodeImaAdpcm(samples) {
-  const numSamples = samples.length;
-  const outBytes = new Uint8Array(Math.floor(numSamples / 2));
-  let valprev = 0;
-  let index = 0;
-
-  for (let i = 0; i < numSamples; i += 2) {
-    let s0 = Math.max(-1, Math.min(1, samples[i]));
-    let sample0 = Math.floor(s0 < 0 ? s0 * 32768 : s0 * 32767);
-    let diff0 = sample0 - valprev;
-    let sign0 = diff0 < 0 ? 8 : 0;
-    if (sign0) diff0 = -diff0;
-
-    let step0 = ADPCM_STEP_TABLE[index];
-    let delta0 = 0;
-    let vpdiff0 = step0 >> 3;
-
-    if (diff0 >= step0) { delta0 |= 4; diff0 -= step0; vpdiff0 += step0; }
-    step0 >>= 1;
-    if (diff0 >= step0) { delta0 |= 2; diff0 -= step0; vpdiff0 += step0; }
-    step0 >>= 1;
-    if (diff0 >= step0) { delta0 |= 1; vpdiff0 += step0; }
-
-    valprev += (sign0 ? -vpdiff0 : vpdiff0);
-    valprev = Math.max(-32768, Math.min(32767, valprev));
-    delta0 |= sign0;
-    index += ADPCM_INDEX_TABLE[delta0];
-    index = Math.max(0, Math.min(88, index));
-
-    let s1 = Math.max(-1, Math.min(1, samples[i + 1] || 0));
-    let sample1 = Math.floor(s1 < 0 ? s1 * 32768 : s1 * 32767);
-    let diff1 = sample1 - valprev;
-    let sign1 = diff1 < 0 ? 8 : 0;
-    if (sign1) diff1 = -diff1;
-
-    let step1 = ADPCM_STEP_TABLE[index];
-    let delta1 = 0;
-    let vpdiff1 = step1 >> 3;
-
-    if (diff1 >= step1) { delta1 |= 4; diff1 -= step1; vpdiff1 += step1; }
-    step1 >>= 1;
-    if (diff1 >= step1) { delta1 |= 2; diff1 -= step1; vpdiff1 += step1; }
-    step1 >>= 1;
-    if (diff1 >= step1) { delta1 |= 1; vpdiff1 += step1; }
-
-    valprev += (sign1 ? -vpdiff1 : vpdiff1);
-    valprev = Math.max(-32768, Math.min(32767, valprev));
-    index += ADPCM_INDEX_TABLE[delta1];
-    index = Math.max(0, Math.min(88, index));
-
-    outBytes[i >> 1] = (delta0 & 0x0f) | ((delta1 & 0x0f) << 4);
-  }
-  return outBytes;
-}
-
-function decodeImaAdpcm(bytes) {
-  const numSamples = bytes.length * 2;
-  const samples = new Float32Array(numSamples);
-  let valprev = 0;
-  let index = 0;
-
-  for (let i = 0; i < bytes.length; i++) {
-    const byte = bytes[i];
-    const delta0 = byte & 0x0f;
-    const delta1 = (byte >> 4) & 0x0f;
-
-    let step0 = ADPCM_STEP_TABLE[index];
-    let vpdiff0 = step0 >> 3;
-    if (delta0 & 4) vpdiff0 += step0;
-    if (delta0 & 2) vpdiff0 += (step0 >> 1);
-    if (delta0 & 1) vpdiff0 += (step0 >> 2);
-    valprev += (delta0 & 8) ? -vpdiff0 : vpdiff0;
-    valprev = Math.max(-32768, Math.min(32767, valprev));
-    index += ADPCM_INDEX_TABLE[delta0];
-    index = Math.max(0, Math.min(88, index));
-    samples[i * 2] = valprev / 32768;
-
-    let step1 = ADPCM_STEP_TABLE[index];
-    let vpdiff1 = step1 >> 3;
-    if (delta1 & 4) vpdiff1 += step1;
-    if (delta1 & 2) vpdiff1 += (step1 >> 1);
-    if (delta1 & 1) vpdiff1 += (step1 >> 2);
-    valprev += (delta1 & 8) ? -vpdiff1 : vpdiff1;
-    valprev = Math.max(-32768, Math.min(32767, valprev));
-    index += ADPCM_INDEX_TABLE[delta1];
-    index = Math.max(0, Math.min(88, index));
-    samples[i * 2 + 1] = valprev / 32768;
-  }
-  return samples;
-}
-
-function resampleTo16k(inputData, inputRate) {
-  if (inputRate === 16000) return inputData;
-  const ratio = inputRate / 16000;
-  const newLength = Math.round(inputData.length / ratio);
-  const output = new Float32Array(newLength);
-  for (let i = 0; i < newLength; i++) {
-    const srcIndex = i * ratio;
-    const indexLow = Math.floor(srcIndex);
-    const indexHigh = Math.min(indexLow + 1, inputData.length - 1);
-    const weight = srcIndex - indexLow;
-    output[i] = inputData[indexLow] * (1 - weight) + inputData[indexHigh] * weight;
-  }
-  return output;
-}
-
-let relayNextPlayTime = 0;
-function playRelayAudio(samples) {
-  try {
-    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-    if (!state.audioCtx) {
-      state.audioCtx = new AudioCtxClass();
-    }
-    if (state.audioCtx.state === 'suspended') {
-      state.audioCtx.resume().catch(() => {});
-    }
-
-    const audioBuffer = state.audioCtx.createBuffer(1, samples.length, 16000);
-    audioBuffer.getChannelData(0).set(samples);
-
-    const source = state.audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-
-    if (typeof state.audioCtx.setSinkId === 'function' && state.selectedAudioOutputId) {
-      state.audioCtx.setSinkId(state.selectedAudioOutputId).catch(() => {});
-    }
-
-    source.connect(state.audioCtx.destination);
-
-    const currentTime = state.audioCtx.currentTime;
-    if (relayNextPlayTime < currentTime) {
-      relayNextPlayTime = currentTime + 0.025;
-    }
-    source.start(relayNextPlayTime);
-    relayNextPlayTime += audioBuffer.duration;
-  } catch (err) {
-    console.warn('[AudioRelay] Error reproduciendo:', err);
-  }
-}
-
-async function handleIncomingAudioBinary(data) {
-  let arrayBuffer;
-  if (data instanceof ArrayBuffer) {
-    arrayBuffer = data;
-  } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
-    arrayBuffer = await data.arrayBuffer();
-  } else {
-    return;
-  }
-
-  const bytes = new Uint8Array(arrayBuffer);
-  if (bytes.length < 10 || bytes[0] !== 0x52 || bytes[1] !== 0x43) return;
-
-  // Extraer ID de piloto emisor
-  let senderId = '';
-  for (let i = 2; i < 10; i++) {
-    senderId += String.fromCharCode(bytes[i]);
-  }
-  senderId = senderId.trim();
-
-  // Si es eco propio, ignorar
-  if (senderId === state.myId) return;
-
-  const peer = state.peers.get(senderId);
-  // Si WebRTC P2P ya está conectado y reproduciendo audio de este par, priorizar P2P para evitar duplicados
-  if (peer && peer.isP2pConnected && peer.hasIncomingRtpAudio) {
-    return;
-  }
-
-  // Decodificar ADPCM y reproducir inmediatamente a través de AudioContext
-  const adpcmPayload = bytes.subarray(10);
-  const samples = decodeImaAdpcm(adpcmPayload);
-  playRelayAudio(samples);
-
-  if (peer) {
-    peer.isTalking = true;
-    renderPeers();
-    clearTimeout(peer.relayTalkTimeout);
-    peer.relayTalkTimeout = setTimeout(() => {
-      peer.isTalking = false;
-      renderPeers();
-    }, 350);
-  }
-}
-
-// ==========================================
 // AUDIO ENGINE: VOX INTELIGENTE & WEBRTC P2P
 // ==========================================
 
-// Configuración del Analizador Acústico VOX y Retransmisión WebSocket (En memoria paralela con pista clonada)
+// Configuración del Analizador Acústico VOX (En memoria paralela con pista clonada)
 function setupVoxAnalyser(stream) {
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -1147,9 +904,10 @@ function setupVoxAnalyser(stream) {
     const tracks = stream.getAudioTracks();
     if (!tracks || tracks.length === 0) return;
 
-    // SOLUCIÓN CLAVE: Clonar la pista de audio exclusivamente para el analizador acústico y relay.
+    // SOLUCIÓN CLAVE: Clonar la pista de audio exclusivamente para el analizador acústico.
     // Al clonarla, analyserTrack.enabled permanece SIEMPRE en true en el AudioContext.
-    // Esto permite capturar el audio real para VOX y para retransmitir por WebSocket hacia redes 4G/WiFi.
+    // Esto permite que el analizador siga escuchando el micrófono real para detectar cuándo hablas,
+    // incluso cuando la pista WebRTC principal esté temporalmente silenciada (track.enabled = false).
     if (state.analyserTrack) {
       try { state.analyserTrack.stop(); } catch (e) {}
       state.analyserTrack = null;
@@ -1163,42 +921,6 @@ function setupVoxAnalyser(stream) {
     analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.2;
     source.connect(analyser);
-
-    // Configurar nodo de captura y retransmisión de audio vía WebSocket para redes 4G/Nube
-    if (state.relayProcessorNode) {
-      try { state.relayProcessorNode.disconnect(); } catch (e) {}
-      state.relayProcessorNode = null;
-    }
-    const relayProcessor = state.audioCtx.createScriptProcessor(1024, 1, 1);
-    state.relayProcessorNode = relayProcessor;
-
-    relayProcessor.onaudioprocess = (e) => {
-      if (!state.isTransmitting) return;
-      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-
-      const input = e.inputBuffer.getChannelData(0);
-      const resampled = resampleTo16k(input, state.audioCtx.sampleRate);
-      const adpcm = encodeImaAdpcm(resampled);
-
-      const idStr = (state.myId || 'pilot000').padEnd(8, ' ').substring(0, 8);
-      const packet = new Uint8Array(10 + adpcm.length);
-      packet[0] = 0x52; // 'R'
-      packet[1] = 0x43; // 'C'
-      for (let i = 0; i < 8; i++) {
-        packet[2 + i] = idStr.charCodeAt(i);
-      }
-      packet.set(adpcm, 10);
-
-      try {
-        state.ws.send(packet.buffer);
-      } catch (err) {}
-    };
-
-    source.connect(relayProcessor);
-    const dummyGain = state.audioCtx.createGain();
-    dummyGain.gain.value = 0;
-    relayProcessor.connect(dummyGain);
-    dummyGain.connect(state.audioCtx.destination);
 
     state.voxSourceNode = source;
     state.analyserNode = analyser;

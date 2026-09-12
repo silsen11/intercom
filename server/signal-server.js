@@ -9,15 +9,32 @@ const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 8765;
 
-// STUN and TURN fallback servers for 4G/5G mobile NAT traversal
+// STUN and free TURN servers for 4G/5G mobile NAT traversal
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:stun.relay.metered.ca:80' }
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
 ];
 
 // Room state: roomId -> Map<ws, { id: string, nick: string, isTalking: boolean, lastPing: number }>
@@ -99,13 +116,7 @@ wss.on('connection', (ws, req) => {
 
   console.log(`[+] Conexión establecida: ${clientId} (${clientIp})`);
 
-  ws.on('message', (data, isBinary) => {
-    // Retransmisión directa de paquetes de audio binario para 4G / WiFi / Nube / Túneles
-    if (isBinary || (Buffer.isBuffer(data) && data.length > 2 && data[0] === 0x52 && data[1] === 0x43)) {
-      relayAudioBinary(ws, data);
-      return;
-    }
-
+  ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
       handleMessage(ws, msg, clientId);
@@ -233,21 +244,6 @@ function relayMessage(ws, msg) {
       fromNick: sender.nick
     }));
   }
-}
-
-// Retransmisión de paquetes de voz en tiempo real vía WebSocket (para redes 4G/CGNAT/Móvil)
-function relayAudioBinary(ws, data) {
-  const sender = clients.get(ws);
-  if (!sender) return;
-
-  const room = rooms.get(sender.roomId);
-  if (!room) return;
-
-  room.forEach((info, peerWs) => {
-    if (peerWs !== ws && peerWs.readyState === WebSocket.OPEN) {
-      peerWs.send(data, { binary: true });
-    }
-  });
 }
 
 function handleTalkState(ws, msg) {
