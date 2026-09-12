@@ -52,6 +52,7 @@
       </div>
       <div class="status-bottom">
         <span class="pilot-info">Piloto: <strong id="displayNick">Piloto Alfa</strong></span>
+        <span id="displayDataUsage" class="data-usage-pill" title="Datos móviles consumidos en esta sesión">📊 0.0 MB</span>
         <span id="displayCount" class="pilots-count">👥 1 en ruta</span>
       </div>
     </div>
@@ -152,6 +153,14 @@
             </div>
           </div>
         </div>
+
+        <label class="input-label" for="selectDataSaver">CONSUMO DE DATOS MÓVILES (OPUS):</label>
+        <select id="selectDataSaver" class="input-field">
+          <option value="ultra">⚡ Ultra Ahorro (12 kbps - ~5 MB/h | Red 3G/4G débil)</option>
+          <option value="balanced" selected>⚖️ Equilibrado (16 kbps - ~8 MB/h | Recomendado)</option>
+          <option value="hd">🎧 Alta Fidelidad (28 kbps - ~15 MB/h | WiFi)</option>
+        </select>
+        <p class="settings-hint">Reduce drásticamente el uso de megas de tu plan móvil agrupando paquetes de red y ajustando la tasa de bits.</p>
 
         <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
         <input type="text" id="inputServer" class="input-field" value="">

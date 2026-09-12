@@ -37,12 +37,49 @@ const state = {
   voxMode: localStorage.getItem('ridercom_vox_mode') || 'standard',
   selectedAudioInputId: localStorage.getItem('ridercom_input_device') || '',
   selectedAudioOutputId: localStorage.getItem('ridercom_output_device') || '',
+  dataSaverMode: localStorage.getItem('ridercom_datasaver_profile') || 'balanced',
+  lastTotalBytes: 0,
+  lastStatsTimestamp: Date.now(),
+  statsInterval: null,
   voxLoopTimer: null,
   voxConsecutiveVoice: 0,
   voxHoldTimer: 0,
   ws: null,
   myId: null
 };
+
+// Perfiles de Consumo de Datos Móviles (Optimización de Ancho de Banda y Cabeceras UDP)
+const DATA_SAVER_PROFILES = {
+  ultra: {
+    label: 'Ultra Ahorro',
+    bitrate: 12000, // 12 kbps (Reduce >60% de consumo, ideal para 3G/4G débil)
+    ptime: 60,      // Agrupa 60ms por paquete (reduce cabeceras IP un 66%)
+    maxptime: 60
+  },
+  balanced: {
+    label: 'Equilibrado',
+    bitrate: 16000, // 16 kbps (Nitidez total de voz, reduce 50% de consumo)
+    ptime: 40,      // Agrupa 40ms por paquete (reduce cabeceras IP un 50%)
+    maxptime: 60
+  },
+  hd: {
+    label: 'Alta Fidelidad',
+    bitrate: 28000, // 28 kbps (Calidad de estudio para WiFi)
+    ptime: 20,      // Paquetes estándar cada 20ms
+    maxptime: 40
+  }
+};
+
+function applyDataSaverProfile(mode) {
+  if (!DATA_SAVER_PROFILES[mode]) mode = 'balanced';
+  state.dataSaverMode = mode;
+  localStorage.setItem('ridercom_datasaver_profile', mode);
+
+  const elSelect = document.getElementById('selectDataSaver');
+  if (elSelect) {
+    elSelect.value = mode;
+  }
+}
 
 // Perfiles de discriminación acústica Voz Humana vs Viento/Motor (VOX Inteligente)
 const VOX_PROFILES = {
@@ -102,32 +139,101 @@ function applyDspProfile(mode) {
   }
 }
 
-// Optimización de SDP Opus para activar AEC por hardware y DTX (Supresión de silencio)
+// Optimización de SDP Opus: Bitrate Inteligente, Empaquetado ptime y DTX (Ahorro de Datos)
 function optimizeOpusSdp(sdp) {
   try {
     const match = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
     if (!match) return sdp;
     const pt = match[1];
-    // stereo=0 y sprop-stereo=0 fuerzan mono en Android (obligatorio para activar AEC hardware)
-    // usedtx=1 detiene la transmisión de paquetes en pausas/silencio
-    // useinbandfec=1 protege contra paquetes perdidos en 4G/5G
-    const opusParams = 'minptime=10;useinbandfec=1;usedtx=1;stereo=0;sprop-stereo=0;maxaveragebitrate=32000';
+
+    const dataProfile = DATA_SAVER_PROFILES[state.dataSaverMode] || DATA_SAVER_PROFILES.balanced;
+    const bitrate = dataProfile.bitrate;
+    const ptime = dataProfile.ptime;
+    const maxptime = dataProfile.maxptime || 60;
+
+    // stereo=0 y sprop-stereo=0 fuerzan mono (imprescindible para AEC hardware)
+    // usedtx=1 detiene la transmisión de paquetes en silencio (ahorro del 75% en ruta)
+    // useinbandfec=1 protege contra paquetes perdidos en cobertura móvil
+    const opusParams = `minptime=20;ptime=${ptime};maxptime=${maxptime};useinbandfec=1;usedtx=1;stereo=0;sprop-stereo=0;maxaveragebitrate=${bitrate};cbr=0`;
 
     if (sdp.includes(`a=fmtp:${pt}`)) {
-      return sdp.replace(
+      sdp = sdp.replace(
         new RegExp(`a=fmtp:${pt}\\s+[^\\r\\n]+`, 'g'),
         `a=fmtp:${pt} ${opusParams}`
       );
     } else {
-      return sdp.replace(
+      sdp = sdp.replace(
         new RegExp(`a=rtpmap:${pt}\\s+opus\\/48000\\/2[\\r\\n]+`, 'g'),
         (m) => `${m}a=fmtp:${pt} ${opusParams}\r\n`
       );
     }
+
+    // Inyectar o reemplazar ptime y maxptime a nivel de sesión
+    if (sdp.includes('a=ptime:')) {
+      sdp = sdp.replace(/a=ptime:\d+/g, `a=ptime:${ptime}`);
+    } else {
+      sdp = sdp.replace(/(m=audio[^\r\n]+[\r\n]+)/, `$1a=ptime:${ptime}\r\n`);
+    }
+
+    if (sdp.includes('a=maxptime:')) {
+      sdp = sdp.replace(/a=maxptime:\d+/g, `a=maxptime:${maxptime}`);
+    } else {
+      sdp = sdp.replace(/(m=audio[^\r\n]+[\r\n]+)/, `$1a=maxptime:${maxptime}\r\n`);
+    }
+
+    return sdp;
   } catch (e) {
     console.warn('[WebRTC] Error optimizando SDP Opus:', e);
     return sdp;
   }
+}
+
+// Monitor de Consumo de Datos Móviles en Tiempo Real
+function startDataUsageMonitor() {
+  if (state.statsInterval) return;
+
+  state.statsInterval = setInterval(async () => {
+    const elDataUsage = document.getElementById('displayDataUsage');
+    if (!elDataUsage) return;
+
+    let totalBytes = 0;
+    const promises = [];
+
+    state.peers.forEach((peer) => {
+      if (peer.pc && (peer.pc.connectionState === 'connected' || peer.pc.iceConnectionState === 'connected')) {
+        promises.push(
+          peer.pc.getStats().then((stats) => {
+            stats.forEach((report) => {
+              if (report.type === 'outbound-rtp' && report.kind === 'audio' && typeof report.bytesSent === 'number') {
+                totalBytes += report.bytesSent;
+              }
+              if (report.type === 'inbound-rtp' && report.kind === 'audio' && typeof report.bytesReceived === 'number') {
+                totalBytes += report.bytesReceived;
+              }
+            });
+          }).catch(() => {})
+        );
+      }
+    });
+
+    await Promise.all(promises);
+
+    const now = Date.now();
+    const timeDeltaSec = Math.max((now - state.lastStatsTimestamp) / 1000, 0.5);
+
+    if (state.lastTotalBytes > 0 && totalBytes >= state.lastTotalBytes) {
+      const bytesDiff = totalBytes - state.lastTotalBytes;
+      const speedKBps = (bytesDiff / timeDeltaSec) / 1024;
+      const totalMb = totalBytes / (1024 * 1024);
+      elDataUsage.textContent = `📊 ${totalMb.toFixed(1)} MB (${speedKBps.toFixed(1)} KB/s)`;
+    } else if (totalBytes > 0) {
+      const totalMb = totalBytes / (1024 * 1024);
+      elDataUsage.textContent = `📊 ${totalMb.toFixed(1)} MB`;
+    }
+
+    state.lastTotalBytes = totalBytes;
+    state.lastStatsTimestamp = now;
+  }, 2000);
 }
 
 // Detección y Gestión de Dispositivos de Audio / Cascos Bluetooth
@@ -313,6 +419,8 @@ document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
 applyHandsFreeMode(state.handsFreeMode);
 applyVoxProfile(state.voxMode);
+applyDataSaverProfile(state.dataSaverMode);
+startDataUsageMonitor();
 refreshAudioDevices();
 
 // Setup Mic Stream & Web Audio DSP Engine
@@ -1105,18 +1213,21 @@ elLockBtn.addEventListener('click', async () => {
 document.getElementById('btnSettings').addEventListener('click', () => {
   elModal.classList.remove('hidden');
   applyHandsFreeMode(state.handsFreeMode);
+  applyDataSaverProfile(state.dataSaverMode);
   refreshAudioDevices();
 });
 
 document.getElementById('btnDeviceBadge')?.addEventListener('click', () => {
   elModal.classList.remove('hidden');
   applyHandsFreeMode(state.handsFreeMode);
+  applyDataSaverProfile(state.dataSaverMode);
   refreshAudioDevices();
 });
 
 document.getElementById('btnDspBadge')?.addEventListener('click', () => {
   elModal.classList.remove('hidden');
   applyHandsFreeMode(state.handsFreeMode);
+  applyDataSaverProfile(state.dataSaverMode);
   refreshAudioDevices();
 });
 
@@ -1150,6 +1261,12 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
     applyVoxProfile(selectedVox);
   }
 
+  const selectedDataSaver = document.getElementById('selectDataSaver')?.value;
+  const oldDataSaver = state.dataSaverMode;
+  if (selectedDataSaver) {
+    applyDataSaverProfile(selectedDataSaver);
+  }
+
   const selectedInput = document.getElementById('selectAudioInput')?.value ?? '';
   const selectedOutput = document.getElementById('selectAudioOutput')?.value ?? '';
 
@@ -1165,8 +1282,8 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   elNick.textContent = state.nick;
   elModal.classList.add('hidden');
 
-  // Solo reconectar si cambiaron datos de conexión a la sala, NO por cambiar de micrófono o VOX
-  if (state.room !== oldRoom || state.nick !== oldNick || state.serverUrl !== oldServer) {
+  // Solo reconectar si cambiaron datos de conexión a la sala o el perfil de consumo Opus
+  if (state.room !== oldRoom || state.nick !== oldNick || state.serverUrl !== oldServer || (selectedDataSaver && selectedDataSaver !== oldDataSaver)) {
     if (state.ws) state.ws.close();
   }
 });
