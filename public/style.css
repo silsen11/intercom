@@ -410,200 +410,6 @@ body {
   flex: 1;
   padding: 12px;
   border-radius: 10px;
-.ptt-button:active, .ptt-button.active {
-  background-color: #dc2626 !important;
-  border-color: #f87171 !important;
-  transform: scale(1.05);
-}
-
-.ptt-button.locked {
-  background-color: #d97706;
-  border-color: #fcd34d;
-}
-
-.mic-circle {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  background-color: #1e293b;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 8px;
-}
-
-.active .mic-circle, .locked .mic-circle {
-  background-color: rgba(255, 255, 255, 0.25);
-}
-
-.mic-icon {
-  font-size: 36px;
-}
-
-.ptt-label {
-  font-size: 13px;
-  font-weight: 900;
-  color: #94a3b8;
-  letter-spacing: 2px;
-}
-
-.active .ptt-label, .locked .ptt-label {
-  color: #ffffff;
-}
-
-.lock-btn {
-  margin-top: 18px;
-  padding: 8px 18px;
-  background-color: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 20px;
-  color: #94a3b8;
-  font-size: 12px;
-  font-weight: bold;
-  cursor: pointer;
-}
-
-.lock-btn.active {
-  background-color: #f59e0b;
-  color: #080c14;
-  border-color: #fcd34d;
-}
-
-/* PEERS SECTION */
-.peers-section {
-  flex: 1;
-  background-color: #0b1120;
-  border-top-left-radius: 20px;
-  border-top-right-radius: 20px;
-  border: 1px solid #1f293d;
-  padding: 16px;
-  overflow-y: auto;
-}
-
-.peers-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.peers-title {
-  font-size: 12px;
-  font-weight: bold;
-  color: #94a3b8;
-  letter-spacing: 1px;
-}
-
-.peers-counter {
-  font-size: 11px;
-  font-weight: bold;
-  color: #38bdf8;
-}
-
-.peer-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background-color: #111827;
-  padding: 12px;
-  border-radius: 12px;
-  margin-bottom: 8px;
-  border: 1px solid #1f293d;
-}
-
-.peer-item.talking {
-  background-color: #064e3b;
-  border-color: #10b981;
-}
-
-.peer-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.peer-name {
-  font-size: 14px;
-  font-weight: bold;
-  color: #f8fafc;
-}
-
-.peer-subtext {
-  font-size: 11px;
-  color: #64748b;
-}
-
-.peer-badge {
-  font-size: 10px;
-  font-weight: bold;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background-color: rgba(16, 185, 129, 0.1);
-  color: #10b981;
-}
-
-.peer-badge.talking {
-  background-color: #10b981;
-  color: #022c22;
-}
-
-/* MODAL */
-.modal {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background-color: rgba(0, 0, 0, 0.75);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-}
-
-.modal.hidden { display: none; }
-
-.modal-content {
-  background-color: #111827;
-  border: 1px solid #1f293d;
-  border-radius: 20px;
-  padding: 20px;
-  width: 100%;
-  max-width: 400px;
-}
-
-.modal-title {
-  font-size: 16px;
-  margin-bottom: 14px;
-  color: #f8fafc;
-}
-
-.input-label {
-  display: block;
-  font-size: 11px;
-  font-weight: bold;
-  color: #94a3b8;
-  margin-top: 10px;
-  margin-bottom: 4px;
-}
-
-.input-field {
-  width: 100%;
-  background-color: #0f172a;
-  border: 1px solid #374151;
-  border-radius: 10px;
-  padding: 10px 12px;
-  color: #f8fafc;
-  font-size: 14px;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 20px;
-}
-
-.btn {
-  flex: 1;
-  padding: 12px;
-  border-radius: 10px;
   font-weight: bold;
   cursor: pointer;
   border: none;
@@ -611,33 +417,183 @@ body {
 
 .btn-secondary { background-color: #1f2937; color: #94a3b8; }
 .btn-primary { background-color: #f59e0b; color: #080c14; }
- 
- 
+
 /* ==============================================================
    LANDSCAPE MODE (HORIZONTAL) - Para teléfonos montados en motos
    ============================================================== */
-@media (orientation: landscape) and (max-width: 1000px) {
+@media (orientation: landscape), (min-aspect-ratio: 1/1) and (max-height: 600px) {
+  html, body {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
   .app-container {
     max-width: 100%;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    margin: 0 auto;
     display: grid;
-    grid-template-columns: 50% 50%;
+    grid-template-columns: 1fr 1fr;
     grid-template-rows: auto auto auto minmax(0, 1fr);
+    overflow: hidden;
   }
-  
-  /* Comprimir Header y StatusBar para ganar espacio vertical */
-  .header { grid-column: 1 / 3; grid-row: 1; padding: 4px 16px; border-bottom: none; }
-  .audio-unlock-banner { grid-column: 1 / 3; grid-row: 2; padding: 4px 16px; font-size: 11px; }
-  .status-bar { grid-column: 1 / 3; grid-row: 3; padding: 6px 16px; }
-  
-  /* Lado Izquierdo: Botón PTT */
+
+  /* 1. HEADER: Compacto para ahorrar espacio vertical manteniendo todos los elementos */
+  .header {
+    grid-column: 1 / 3;
+    grid-row: 1;
+    padding: 6px 16px;
+    border-bottom: 1px solid #1e293b;
+  }
+
+  .brand {
+    gap: 8px;
+  }
+
+  .logo-icon {
+    font-size: 20px;
+  }
+
+  .brand-title {
+    font-size: 15px;
+  }
+
+  .badge {
+    font-size: 8px;
+    padding: 1px 5px;
+  }
+
+  .brand-subtitle {
+    font-size: 10px;
+    line-height: 1;
+    display: block;
+  }
+
+  .icon-btn {
+    padding: 4px 8px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+
+  /* 2. AUDIO UNLOCK BANNER (si aparece) */
+  .audio-unlock-banner {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    padding: 4px 16px;
+    font-size: 11px;
+  }
+
+  .unlock-btn-badge {
+    padding: 2px 8px;
+    font-size: 10px;
+  }
+
+  /* 3. STATUS BAR: Barra completa horizontal compacta */
+  .status-bar {
+    grid-column: 1 / 3;
+    grid-row: 3;
+    padding: 5px 16px;
+    border-bottom: 1px solid #1f293d;
+  }
+
+  .status-bottom {
+    margin-top: 4px;
+    font-size: 11px;
+  }
+
+  .pill {
+    padding: 2px 6px;
+  }
+
+  .pill-label {
+    font-size: 7px;
+  }
+
+  .pill-value {
+    font-size: 11px;
+  }
+
+  .status-label {
+    font-size: 10px;
+  }
+
+  /* 4. COLUMNA IZQUIERDA: PTT y Manos Libres */
   .ptt-section {
     grid-column: 1 / 2;
     grid-row: 4;
-    padding: 10px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     justify-content: center;
+    gap: 4px;
+    min-height: 0;
+    overflow: hidden;
   }
-  
-  /* Lado Derecho: Lista de Pilotos */
+
+  .ptt-header {
+    text-align: center;
+    margin-bottom: 0;
+    flex-shrink: 0;
+  }
+
+  .ptt-title {
+    font-size: 11.5px;
+    letter-spacing: 1px;
+    margin-bottom: 1px;
+  }
+
+  .ptt-subtitle {
+    font-size: 9px;
+    color: #64748b;
+    margin-bottom: 2px;
+    text-align: center;
+    line-height: 1.15;
+    display: block;
+  }
+
+  /* Botón PTT siempre circular perfecto sin deformarse */
+  .ptt-button {
+    width: clamp(90px, 24vh, 120px);
+    height: clamp(90px, 24vh, 120px);
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border-width: 4px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+    touch-action: none;
+  }
+
+  .mic-circle {
+    width: clamp(36px, 9.5vh, 48px);
+    height: clamp(36px, 9.5vh, 48px);
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    border-radius: 50%;
+    margin-bottom: 2px;
+  }
+
+  .mic-icon {
+    font-size: clamp(16px, 4.8vh, 22px);
+  }
+
+  .ptt-label {
+    font-size: clamp(9px, 2.3vh, 11px);
+    letter-spacing: 1px;
+  }
+
+  .lock-btn {
+    margin-top: 0;
+    padding: 5px 14px;
+    font-size: 10.5px;
+    border-radius: 14px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 5. COLUMNA DERECHA: Lista de Pilotos */
   .peers-section {
     grid-column: 2 / 3;
     grid-row: 4;
@@ -645,38 +601,75 @@ body {
     border-top-right-radius: 0;
     border-top: none;
     border-left: 1px solid #1f293d;
-    margin: 0;
-    padding: 10px 16px;
+    padding: 8px 14px;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
-  
-  /* Achicar el botón PTT para que entre perfecto sin scroll */
-  .ptt-button {
-    width: 130px;
-    height: 130px;
-    border-width: 5px;
+
+  .peers-header {
+    margin-bottom: 8px;
   }
-  
-  .mic-circle {
-    width: 55px;
-    height: 55px;
-    margin-bottom: 4px;
-  }
-  
-  .mic-icon {
-    font-size: 26px;
-  }
-  
-  .ptt-label {
+
+  .peers-title {
     font-size: 11px;
   }
-  
-  .lock-btn {
-    margin-top: 10px;
-    padding: 6px 12px;
+
+  .peers-counter {
+    font-size: 10px;
   }
-  
-  /* Ocultar textos no esenciales en horizontal para ahorrar pixeles */
-  .ptt-subtitle, .brand-subtitle {
-    display: none;
+
+  .peer-item {
+    padding: 7px 10px;
+    margin-bottom: 6px;
+    border-radius: 8px;
+  }
+
+  .peer-name {
+    font-size: 12.5px;
+  }
+
+  .peer-subtext {
+    font-size: 10px;
+  }
+
+  .peer-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+
+  /* 6. MODAL DE CONFIGURACIÓN ADAPTADO A HORIZONTAL */
+  .modal-content {
+    max-height: 92vh;
+    overflow-y: auto;
+    padding: 14px 18px;
+  }
+
+  .modal-title {
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+
+  .input-label {
+    margin-top: 6px;
+    margin-bottom: 2px;
+    font-size: 10px;
+  }
+
+  .input-field {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .modal-actions {
+    margin-top: 12px;
+    gap: 8px;
+  }
+
+  .btn {
+    padding: 8px;
+    font-size: 12px;
   }
 }
+
