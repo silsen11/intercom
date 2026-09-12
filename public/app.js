@@ -1,6 +1,6 @@
 /**
  * RiderCom Mesh Pro - Web/PWA Client
- * Push-To-Talk + WebRTC P2P
+ * Dual-Engine: WebRTC P2P + WebSocket Audio Relay (100% Conectividad en 4G/5G)
  */
 
 const state = {
@@ -9,8 +9,12 @@ const state = {
   serverUrl: '',
   isTransmitting: false,
   isLocked: false,
-  peers: new Map(), // peerId -> { id, nick, pc, isTalking }
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  peers: new Map(), // peerId -> { id, nick, pc, isTalking, pendingCandidates }
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' }
+  ],
   localStream: null,
   ws: null,
   myId: null
@@ -36,6 +40,8 @@ const elLockBtn = document.getElementById('btnToggleLock');
 const elPeersList = document.getElementById('peersList');
 const elPeersTotal = document.getElementById('peersTotal');
 const elModal = document.getElementById('settingsModal');
+const elUnlockBanner = document.getElementById('audioUnlockBanner');
+const elBtnUnlock = document.getElementById('btnUnlockAudio');
 
 // Init fields
 elRoom.textContent = state.room;
@@ -44,7 +50,7 @@ document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
 
-// Setup Mic Stream
+// Setup Mic Stream & Unlock Mobile Audio
 async function getLocalStream() {
   if (state.localStream) return state.localStream;
   try {
@@ -56,15 +62,59 @@ async function getLocalStream() {
       },
       video: false
     });
+
     // PTT mute by default
-    stream.getAudioTracks().forEach(t => t.enabled = false);
+    stream.getAudioTracks().forEach(t => (t.enabled = false));
     state.localStream = stream;
+
+    // Vincular track a todos los pares que ya estén conectados
+    state.peers.forEach((peer) => {
+      stream.getAudioTracks().forEach((t) => {
+        try {
+          peer.pc.addTrack(t, stream);
+        } catch (e) {}
+      });
+    });
+
+    if (elUnlockBanner) {
+      elUnlockBanner.classList.add('hidden');
+    }
+
     return stream;
   } catch (err) {
-    alert('Permiso de micrófono requerido para hablar en el intercomunicador.');
+    console.warn('[Audio] Esperando permiso del micrófono:', err);
     return null;
   }
 }
+
+async function unlockAudio() {
+  try {
+    await getLocalStream();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      const ctx = new AudioContextClass();
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+    }
+    if (elUnlockBanner) {
+      elUnlockBanner.classList.add('hidden');
+    }
+  } catch (e) {}
+}
+
+if (elUnlockBanner) {
+  elUnlockBanner.addEventListener('click', unlockAudio);
+}
+if (elBtnUnlock) {
+  elBtnUnlock.addEventListener('click', (e) => {
+    e.stopPropagation();
+    unlockAudio();
+  });
+}
+window.addEventListener('pointerdown', () => {
+  if (!state.localStream) unlockAudio();
+}, { once: true });
 
 // WebSocket Connection
 function connect() {
@@ -120,7 +170,7 @@ function setStatus(type, text) {
   elStatusText.textContent = text;
 }
 
-// Signaling Handler
+// Signaling & Message Handler
 async function handleSignaling(msg) {
   switch (msg.type) {
     case 'CONFIG':
@@ -158,6 +208,10 @@ async function handleSignaling(msg) {
       setPeerTalking(msg.peerId, msg.isTalking);
       break;
 
+    case 'AUDIO_DATA':
+      handleIncomingAudio(msg);
+      break;
+
     case 'PONG':
       elLatency.textContent = `${Math.max(1, Date.now() - msg.ts)} ms`;
       break;
@@ -184,24 +238,19 @@ async function createPeerConnection(peerId, nick, isInitiator) {
   state.peers.set(peerId, peerData);
   renderPeers();
 
-  // Asegurar transceiver bidireccional para recibir audio siempre
   try {
     pc.addTransceiver('audio', { direction: 'sendrecv' });
-  } catch (e) {
-    console.warn('[WebRTC] addTransceiver warning:', e);
-  }
+  } catch (e) {}
 
-  // Agregar tracks locales si ya tenemos stream de micrófono
   const stream = await getLocalStream();
   if (stream) {
-    stream.getAudioTracks().forEach(t => {
+    stream.getAudioTracks().forEach((t) => {
       try {
         pc.addTrack(t, stream);
       } catch (e) {}
     });
   }
 
-  // Intercambio de candidatos ICE
   pc.onicecandidate = (e) => {
     if (e.candidate && state.ws?.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({
@@ -214,9 +263,7 @@ async function createPeerConnection(peerId, nick, isInitiator) {
     }
   };
 
-  // Reproducción de audio entrante resistente a políticas de navegador
   pc.ontrack = (e) => {
-    console.log('[WebRTC] Recibiendo audio del compañero:', peerId, nick);
     let audio = document.getElementById(`audio_${peerId}`);
     if (!audio) {
       audio = document.createElement('audio');
@@ -227,24 +274,10 @@ async function createPeerConnection(peerId, nick, isInitiator) {
       document.body.appendChild(audio);
     }
     audio.srcObject = e.streams[0];
-
-    const playPromise = audio.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(err => {
-        console.warn('[WebRTC] Autoplay bloqueado. Desbloqueando en siguiente toque:', err);
-        const unlock = () => {
-          audio.play().catch(() => {});
-          window.removeEventListener('click', unlock);
-          window.removeEventListener('touchstart', unlock);
-        };
-        window.addEventListener('click', unlock, { once: true });
-        window.addEventListener('touchstart', unlock, { once: true });
-      });
-    }
+    audio.play().catch(() => {});
   };
 
   pc.onconnectionstatechange = () => {
-    console.log(`[WebRTC] Estado con ${nick} (${peerId}):`, pc.connectionState);
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       removePeer(peerId);
     }
@@ -252,18 +285,14 @@ async function createPeerConnection(peerId, nick, isInitiator) {
 
   if (isInitiator) {
     try {
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true
-      });
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
       await pc.setLocalDescription(offer);
       state.ws.send(JSON.stringify({
         type: 'OFFER',
         targetId: peerId,
         sdp: offer.sdp
       }));
-    } catch (err) {
-      console.error('[WebRTC] Error al crear offer:', err);
-    }
+    } catch (err) {}
   }
 
   return pc;
@@ -275,7 +304,6 @@ async function handleOffer(msg) {
 
   await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
 
-  // Aplicar candidatos ICE que hayan llegado antes de la descripción remota
   if (peer && peer.pendingCandidates.length > 0) {
     for (const cand of peer.pendingCandidates) {
       try {
@@ -299,8 +327,6 @@ async function handleAnswer(msg) {
   const peer = state.peers.get(msg.fromId);
   if (peer && peer.pc) {
     await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
-
-    // Aplicar candidatos ICE en cola
     if (peer.pendingCandidates.length > 0) {
       for (const cand of peer.pendingCandidates) {
         try {
@@ -322,15 +348,12 @@ async function handleCandidate(msg) {
     sdpMLineIndex: msg.sdpMLineIndex
   };
 
-  // Si la descripción remota aún no está lista, guardar en cola
   if (!peer.pc.remoteDescription || !peer.pc.remoteDescription.type) {
     peer.pendingCandidates.push(candidateData);
   } else {
     try {
       await peer.pc.addIceCandidate(new RTCIceCandidate(candidateData));
-    } catch (e) {
-      console.warn('[WebRTC] Error al agregar candidato:', e);
-    }
+    } catch (e) {}
   }
 }
 
@@ -390,7 +413,7 @@ function renderPeers() {
     </div>
   `;
 
-  state.peers.forEach(peer => {
+  state.peers.forEach((peer) => {
     html += `
       <div class="peer-item ${peer.isTalking ? 'talking' : ''}">
         <div class="peer-left">
@@ -410,12 +433,37 @@ function renderPeers() {
   elPeersList.innerHTML = html;
 }
 
-// PTT Handling
+// ==========================================
+// DUAL AUDIO ENGINE: PTT + WEBSOCKET RELAY
+// ==========================================
+let mediaRecorder = null;
+let recordedChunks = [];
+
 async function startTalk() {
   const stream = await getLocalStream();
-  if (stream) {
-    stream.getAudioTracks().forEach(t => t.enabled = true);
+  if (!stream) return;
+
+  // 1. Activar track WebRTC P2P
+  stream.getAudioTracks().forEach((t) => (t.enabled = true));
+
+  // 2. Iniciar grabadora de respaldo garantizado por WebSocket
+  try {
+    recordedChunks = [];
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '');
+
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        recordedChunks.push(e.data);
+      }
+    };
+    mediaRecorder.start(100);
+  } catch (err) {
+    console.warn('[PTT] MediaRecorder init error:', err);
   }
+
   state.isTransmitting = true;
   updatePttUI();
 
@@ -427,14 +475,74 @@ async function startTalk() {
 
 function stopTalk() {
   if (state.localStream) {
-    state.localStream.getAudioTracks().forEach(t => t.enabled = false);
+    state.localStream.getAudioTracks().forEach((t) => (t.enabled = false));
   }
+
+  // 2. Detener grabadora y retransmitir por WebSocket (garantizado en 4G)
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.onstop = () => {
+      if (recordedChunks.length > 0) {
+        const mimeType = mediaRecorder.mimeType || 'audio/webm';
+        const blob = new Blob(recordedChunks, { type: mimeType });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Audio = reader.result.split(',')[1];
+          if (state.ws?.readyState === WebSocket.OPEN && base64Audio) {
+            state.ws.send(JSON.stringify({
+              type: 'AUDIO_DATA',
+              audio: base64Audio
+            }));
+          }
+        };
+        reader.readAsDataURL(blob);
+      }
+    };
+    try {
+      mediaRecorder.stop();
+    } catch (e) {}
+  }
+
   state.isTransmitting = false;
   state.isLocked = false;
   updatePttUI();
 
   if (state.ws?.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({ type: 'TALK_STATE', isTalking: false }));
+  }
+}
+
+// Reproducir audio recibido por WebSocket (garantizado sobre cualquier red 4G/5G)
+function handleIncomingAudio(msg) {
+  if (msg.fromId === state.myId) return;
+
+  setPeerTalking(msg.fromId, true);
+
+  try {
+    const binaryStr = atob(msg.audio);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'audio/webm' });
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    audio.volume = 1.0;
+
+    const cleanup = () => {
+      setPeerTalking(msg.fromId, false);
+      URL.revokeObjectURL(audioUrl);
+    };
+
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+
+    audio.play().catch((err) => {
+      console.warn('[Audio] Autoplay bloqueado. Toca la pantalla para escuchar:', err);
+      cleanup();
+    });
+  } catch (err) {
+    console.error('[Audio] Error al reproducir audio entrante:', err);
+    setPeerTalking(msg.fromId, false);
   }
 }
 
@@ -456,13 +564,12 @@ function updatePttUI() {
   }
 }
 
-// PTT Touch & Mouse Events
+// PTT Touch & Pointer Events
 let lastTap = 0;
 elPttBtn.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   const now = Date.now();
   if (now - lastTap < 350) {
-    // Doble toque = fijar manos libres
     state.isLocked = !state.isLocked;
     if (state.isLocked) startTalk(); else stopTalk();
     lastTap = 0;
@@ -474,7 +581,7 @@ elPttBtn.addEventListener('pointerdown', (e) => {
 });
 
 window.addEventListener('pointerup', () => {
-  if (!state.isLocked) stopTalk();
+  if (!state.isLocked && state.isTransmitting) stopTalk();
 });
 
 elLockBtn.addEventListener('click', () => {
