@@ -420,6 +420,34 @@ body {
   border-color: #38bdf8;
 }
 
+.volume-indicator-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background-color: #1e293b;
+  border: 1px solid #0284c7;
+  border-radius: 12px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: bold;
+  color: #38bdf8;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.volume-indicator-badge:hover, .volume-indicator-badge:active {
+  background-color: #0369a1;
+  color: #ffffff;
+  transform: scale(1.04);
+}
+
+.volume-indicator-badge.turbo {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
 /* PEERS SECTION */
 .peers-section {
   flex: 1;
@@ -561,6 +589,103 @@ select.input-field {
   margin-top: 4px;
   margin-bottom: 6px;
   line-height: 1.35;
+}
+
+/* VOLUME & AUDIO BOOST STYLING */
+.volume-settings-group {
+  margin-top: 8px;
+  margin-bottom: 12px;
+  background-color: #0b1120;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.volume-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.volume-badge {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.3px;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.4);
+}
+
+.volume-badge.turbo {
+  background: linear-gradient(135deg, #d97706 0%, #dc2626 100%);
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.5);
+}
+
+.volume-slider-wrap {
+  width: 100%;
+  margin: 6px 0 10px 0;
+}
+
+.volume-slider {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: #1e293b;
+  outline: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #ffffff;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
+  transition: transform 0.1s ease;
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.volume-presets {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.btn-vol-preset {
+  flex: 1;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  padding: 6px 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.btn-vol-preset:hover {
+  background-color: #334155;
+  color: #ffffff;
+}
+
+.btn-vol-preset.active {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  border-color: #38bdf8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
 }
 
 /* VOX Real-Time Calibration Meter */
