@@ -60,7 +60,10 @@ const state = {
   searchTimeout: null,
   lastSpeechText: '',
   lastSpokenDistance: -1,
-  lastLocationBroadcastTs: 0
+  lastLocationBroadcastTs: 0,
+  // Amplificador de Volumen y Procesamiento de Audio
+  intercomVolume: parseInt(localStorage.getItem('ridercom_intercom_volume'), 10) || 150,
+  peerAudioPipelines: new Map() // peerId -> { sourceNode, gainNode, compressorNode, destNode, audioElement }
 };
 
 // Perfiles de Consumo de Datos Móviles (Optimización de Ancho de Banda y Cabeceras UDP)
@@ -438,6 +441,7 @@ applyDataSaverProfile(state.dataSaverMode);
 startDataUsageMonitor();
 refreshAudioDevices();
 initTabs();
+initVolumeControls();
 
 // Setup Mic Stream & Web Audio DSP Engine
 // Setup Mic Stream (Direct Native WebRTC para máxima compatibilidad con Bluetooth SCO y Cascos)
@@ -710,9 +714,9 @@ async function createPeerConnection(peerId, nick, isInitiator) {
       audio.style.display = 'none';
       document.body.appendChild(audio);
     }
-    if (audio.srcObject !== e.streams[0]) {
-      audio.srcObject = e.streams[0];
-    }
+    // Configurar pipeline con amplificación y compresor anti-distorsión
+    setupPeerAudioPipeline(peerId, e.streams[0], audio);
+
     if (typeof audio.setSinkId === 'function' && state.selectedAudioOutputId) {
       audio.setSinkId(state.selectedAudioOutputId).catch(() => {});
     }
@@ -824,6 +828,170 @@ async function handleCandidate(msg) {
   }
 }
 
+// ==========================================
+// AMPLIFICADOR DE VOLUMEN DIGITAL Y COMPRESOR PARA CASCOS (AUDIO BOOST)
+// ==========================================
+function setupPeerAudioPipeline(peerId, incomingStream, audioElement) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      audioElement.srcObject = incomingStream;
+      return;
+    }
+
+    if (!state.audioCtx) {
+      state.audioCtx = new AudioContextClass();
+    }
+    if (state.audioCtx.state === 'suspended') {
+      state.audioCtx.resume().catch(() => {});
+    }
+
+    // Desconectar pipeline previo si existía
+    cleanupPeerAudioPipeline(peerId);
+
+    const sourceNode = state.audioCtx.createMediaStreamSource(incomingStream);
+    const gainNode = state.audioCtx.createGain();
+    const multiplier = state.intercomVolume / 100;
+    gainNode.gain.setValueAtTime(multiplier, state.audioCtx.currentTime);
+
+    // Compresor dinámico anti-distorsión para motocicletas
+    const compressorNode = state.audioCtx.createDynamicsCompressor();
+    compressorNode.threshold.value = -24; // dB
+    compressorNode.knee.value = 30; // dB
+    compressorNode.ratio.value = 12; // limitador suave en picos altos
+    compressorNode.attack.value = 0.003; // segundos
+    compressorNode.release.value = 0.25; // segundos
+
+    const destNode = state.audioCtx.createMediaStreamDestination();
+
+    sourceNode.connect(gainNode);
+    gainNode.connect(compressorNode);
+    compressorNode.connect(destNode);
+
+    state.peerAudioPipelines.set(peerId, {
+      sourceNode,
+      gainNode,
+      compressorNode,
+      destNode,
+      audioElement
+    });
+
+    audioElement.srcObject = destNode.stream;
+    console.log(`[AudioBoost] Pipeline activado para piloto ${peerId} (Volumen: ${state.intercomVolume}%)`);
+  } catch (err) {
+    console.warn('[AudioBoost] Fallback a audio nativo:', err);
+    audioElement.srcObject = incomingStream;
+  }
+}
+
+function cleanupPeerAudioPipeline(peerId) {
+  if (state.peerAudioPipelines && state.peerAudioPipelines.has(peerId)) {
+    const p = state.peerAudioPipelines.get(peerId);
+    try { p.sourceNode?.disconnect(); } catch (e) {}
+    try { p.gainNode?.disconnect(); } catch (e) {}
+    try { p.compressorNode?.disconnect(); } catch (e) {}
+    state.peerAudioPipelines.delete(peerId);
+  }
+}
+
+function setIntercomVolume(volPercent, save = true) {
+  state.intercomVolume = Math.max(20, Math.min(300, volPercent));
+  if (save) {
+    try {
+      localStorage.setItem('ridercom_intercom_volume', state.intercomVolume.toString());
+    } catch (e) {}
+  }
+
+  // Despertar AudioContext si estaba en pausa
+  if (state.audioCtx && state.audioCtx.state === 'suspended') {
+    state.audioCtx.resume().catch(() => {});
+  }
+
+  const multiplier = state.intercomVolume / 100;
+
+  // Actualizar todos los GainNodes activos en tiempo real
+  if (state.audioCtx && state.peerAudioPipelines) {
+    state.peerAudioPipelines.forEach((pipeline) => {
+      try {
+        pipeline.gainNode.gain.setValueAtTime(multiplier, state.audioCtx.currentTime);
+      } catch (e) {}
+    });
+  }
+
+  updateVolumeUI();
+}
+
+function updateVolumeUI() {
+  const vol = state.intercomVolume;
+  let modeLabel = '';
+  if (vol <= 100) modeLabel = `${vol}% (Normal)`;
+  else if (vol <= 160) modeLabel = `${vol}% (Boost Moto)`;
+  else if (vol <= 220) modeLabel = `${vol}% (Casco)`;
+  else modeLabel = `${vol}% (Turbo Boost 🚀)`;
+
+  const elBadgeLabel = document.getElementById('volumeBadgeLabel');
+  const elBadge = document.getElementById('btnVolumeBadge');
+  if (elBadgeLabel) elBadgeLabel.textContent = `Vol: ${vol}%`;
+  if (elBadge) {
+    elBadge.classList.toggle('turbo', vol >= 220);
+    elBadge.title = `Volumen de intercomunicador: ${modeLabel}. Toca para cambiar.`;
+  }
+
+  const elValLabel = document.getElementById('volumeValueLabel');
+  if (elValLabel) {
+    elValLabel.textContent = modeLabel;
+    elValLabel.classList.toggle('turbo', vol >= 220);
+  }
+
+  const elSlider = document.getElementById('sliderVolume');
+  if (elSlider && parseInt(elSlider.value, 10) !== vol) {
+    elSlider.value = vol;
+  }
+
+  // Actualizar botones de presets
+  document.querySelectorAll('.btn-vol-preset').forEach((btn) => {
+    const presetVal = parseInt(btn.getAttribute('data-vol'), 10);
+    btn.classList.toggle('active', presetVal === vol);
+  });
+}
+
+function cycleIntercomVolume() {
+  // Cicla: 100% -> 150% -> 200% -> 300% -> 100%
+  const current = state.intercomVolume;
+  let next = 150;
+  if (current < 130) next = 150;
+  else if (current < 180) next = 200;
+  else if (current < 250) next = 300;
+  else next = 100;
+
+  setIntercomVolume(next);
+}
+
+function initVolumeControls() {
+  const slider = document.getElementById('sliderVolume');
+  const badge = document.getElementById('btnVolumeBadge');
+
+  updateVolumeUI();
+
+  slider?.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val)) setIntercomVolume(val);
+  });
+
+  badge?.addEventListener('click', () => {
+    cycleIntercomVolume();
+  });
+
+  document.querySelectorAll('.btn-vol-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const val = parseInt(btn.getAttribute('data-vol'), 10);
+      if (!isNaN(val)) {
+        setIntercomVolume(val);
+      }
+    });
+  });
+}
+
 function removePeer(peerId) {
   const peer = state.peers.get(peerId);
   if (peer) {
@@ -833,6 +1001,7 @@ function removePeer(peerId) {
     state.peers.delete(peerId);
     renderPeers();
   }
+  cleanupPeerAudioPipeline(peerId);
   const audio = document.getElementById(`audio_${peerId}`);
   if (audio) {
     audio.srcObject = null;
@@ -845,6 +1014,7 @@ function cleanupPeers() {
     try {
       p.pc.close();
     } catch (e) {}
+    cleanupPeerAudioPipeline(id);
     const audio = document.getElementById(`audio_${id}`);
     if (audio) {
       audio.srcObject = null;
