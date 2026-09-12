@@ -1,0 +1,1196 @@
+Entendido. Aquí tienes el **resumen completo** para hacer tu app **nativa Android** que funcione con **datos móviles (4G/5G)**, pero **sin Kotlin**. Usaremos **React Native** con **TypeScript** — se compila a APK nativo, tiene acceso a Bluetooth, WebRTC, y es más fácil que Kotlin si vienes del mundo web.
+
+---
+
+## 🏍️ RESUMEN: RiderCom Mesh Pro — Nativo con React Native
+
+### ¿Por qué React Native y no Kotlin?
+
+| | React Native | Kotlin nativo |
+|---|---|---|
+| **Lenguaje** | JavaScript/TypeScript (ya sabes web) | Kotlin (nuevo para ti) |
+| **Compila a** | APK nativo real | APK nativo real |
+| **Bluetooth** | ✅ Sí, vía módulos nativos | ✅ Sí, nativo |
+| **WebRTC** | ✅ Sí, librerías maduras | ✅ Sí, pero más código |
+| **Curva de aprendizaje** | Baja (web → móvil) | Alta |
+| **Compilador online** | ❌ Ninguno funciona bien | ❌ Ninguno |
+
+**No hay compilador online gratis que funcione.** Necesitas instalar **Node.js + Android Studio** en tu PC. Es gratis y toma ~30 minutos instalar.
+
+---
+
+## 📁 Estructura del Proyecto
+
+```
+RiderComMesh/
+├── App.tsx                 ← App principal
+├── src/
+│   ├── components/
+│   │   ├── PTTButton.tsx
+│   │   ├── PeerList.tsx
+│   │   └── StatusBar.tsx
+│   ├── hooks/
+│   │   ├── useWebRTC.ts    ← Conexiones P2P
+│   │   ├── useSignaling.ts ← WebSocket servidor
+│   │   └── useAudio.ts     ← Micrófono + altavoz
+│   └── utils/
+│       └── protocol.ts
+├── server/
+│   └── signal-server.js    ← Servidor de señalización
+├── android/                ← Generado automáticamente
+└── package.json
+```
+
+---
+
+## 1. Instalación (en tu PC)
+
+```bash
+# 1. Instalar Node.js desde https://nodejs.org
+# 2. Instalar Android Studio desde https://developer.android.com/studio
+# 3. En Android Studio: SDK Manager → instalar Android SDK 34 + Android Emulator
+
+# 4. Crear proyecto
+npx react-native@latest init RiderComMesh --template react-native-template-typescript
+cd RiderComMesh
+
+# 5. Instalar dependencias
+npm install react-native-webrtc react-native-keep-awake @react-native-community/netinfo
+npm install --save-dev @types/react-native-webrtc
+
+# 6. Para Android, configura permisos (ver AndroidManifest abajo)
+```
+
+---
+
+## 2. `android/app/src/main/AndroidManifest.xml`
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    
+    <!-- Internet (datos móviles) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    
+    <!-- Audio -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    
+    <!-- Bluetooth (para futuro headset) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    
+    <!-- Pantalla siempre encendida -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    
+    <application
+        android:name=".MainApplication"
+        android:label="RiderCom Mesh"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true">
+        
+        <activity
+            android:name=".MainActivity"
+            android:label="RiderCom Mesh"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+```
+
+---
+
+## 3. `App.tsx` — App Principal
+
+```typescript
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  StatusBar,
+  TextInput,
+  ScrollView,
+  Vibration,
+  Dimensions,
+} from 'react-native';
+import KeepAwake from 'react-native-keep-awake';
+import NetInfo from '@react-native-community/netinfo';
+import {
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+  mediaDevices,
+  MediaStream,
+} from 'react-native-webrtc';
+
+const { width } = Dimensions.get('window');
+
+// ==================== CONFIG ====================
+const DEFAULT_SERVER = 'wss://ridercom-demo.up.railway.app';
+const STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+// ==================== TIPOS ====================
+interface Peer {
+  id: string;
+  nick: string;
+  pc: RTCPeerConnection;
+  stream?: MediaStream;
+}
+
+// ==================== COMPONENTE ====================
+export default function App() {
+  const [nickname, setNickname] = useState('Piloto Alfa');
+  const [roomCode, setRoomCode] = useState('RUTA' + Math.floor(Math.random() * 10000));
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isTransmitting, setIsTransmitting] = useState(false);
+  const [isPttLocked, setIsPttLocked] = useState(false);
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const [latency, setLatency] = useState<number | null>(null);
+  const [netType, setNetType] = useState('--');
+  const [showSettings, setShowSettings] = useState(false);
+  const [myId, setMyId] = useState<string | null>(null);
+
+  const wsRef = React.useRef<WebSocket | null>(null);
+  const localStreamRef = React.useRef<MediaStream | null>(null);
+  const peersRef = React.useRef<Map<string, Peer>>(new Map());
+  const reconnectTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Detectar tipo de red
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener(state => {
+      setNetType(state.type === 'cellular' ? '4G/5G' : state.type?.toUpperCase() || 'WIFI');
+    });
+    return unsub;
+  }, []);
+
+  // Conectar al iniciar
+  useEffect(() => {
+    connectSignaling();
+    return () => {
+      disconnectAll();
+    };
+  }, []);
+
+  // ==================== WEBSOCKET / SEÑALIZACIÓN ====================
+  const connectSignaling = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    try {
+      const ws = new WebSocket(serverUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setIsConnected(true);
+        ws.send(JSON.stringify({ type: 'JOIN', room: roomCode, nick: nickname }));
+        startPingLoop(ws);
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          handleSignalingMessage(msg);
+        } catch (e) {}
+      };
+
+      ws.onerror = () => setIsConnected(false);
+      ws.onclose = () => {
+        setIsConnected(false);
+        cleanupPeers();
+        scheduleReconnect();
+      };
+    } catch (e) {
+      scheduleReconnect();
+    }
+  }, [serverUrl, roomCode, nickname]);
+
+  const scheduleReconnect = () => {
+    if (reconnectTimerRef.current) return;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      connectSignaling();
+    }, 3000);
+  };
+
+  const handleSignalingMessage = async (msg: any) => {
+    switch (msg.type) {
+      case 'CONFIG':
+        setMyId(msg.clientId);
+        break;
+      case 'PEERS':
+        for (const peer of msg.peers) {
+          await createPeerConnection(peer.id, peer.nick, true);
+        }
+        break;
+      case 'PEER_JOINED':
+        await createPeerConnection(msg.id, msg.nick, false);
+        break;
+      case 'PEER_LEFT':
+        removePeer(msg.id);
+        break;
+      case 'OFFER':
+        await handleOffer(msg);
+        break;
+      case 'ANSWER':
+        await handleAnswer(msg);
+        break;
+      case 'ICE_CANDIDATE':
+        await handleIceCandidate(msg);
+        break;
+      case 'PONG':
+        setLatency(Math.round(performance.now() - msg.ts));
+        break;
+    }
+  };
+
+  // ==================== WEBRTC ====================
+  const getLocalStream = async (): Promise<MediaStream> => {
+    if (localStreamRef.current) return localStreamRef.current;
+
+    const stream = await mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 16000,
+        channelCount: 1,
+      },
+      video: false,
+    });
+
+    // Mutear tracks inicialmente (PTT)
+    stream.getAudioTracks().forEach(t => (t.enabled = false));
+    localStreamRef.current = stream;
+    return stream;
+  };
+
+  const createPeerConnection = async (peerId: string, peerNick: string, isInitiator: boolean) => {
+    if (peersRef.current.has(peerId)) return;
+
+    const pc = new RTCPeerConnection({
+      iceServers: STUN_SERVERS,
+    });
+
+    const peer: Peer = { id: peerId, nick: peerNick, pc };
+    peersRef.current.set(peerId, peer);
+    updatePeersState();
+
+    // Agregar track local
+    const localStream = await getLocalStream();
+    localStream.getTracks().forEach(track => {
+      pc.addTrack(track, localStream);
+    });
+
+    // Eventos
+    pc.onicecandidate = (e) => {
+      if (e.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'ICE_CANDIDATE',
+          targetId: peerId,
+          candidate: e.candidate.candidate,
+          sdpMid: e.candidate.sdpMid,
+          sdpMLineIndex: e.candidate.sdpMLineIndex,
+        }));
+      }
+    };
+
+    pc.ontrack = (e) => {
+      if (e.streams && e.streams[0]) {
+        peer.stream = e.streams[0];
+        updatePeersState();
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        removePeer(peerId);
+      }
+    };
+
+    if (isInitiator) {
+      const offer = await pc.createOffer({});
+      await pc.setLocalDescription(offer);
+      wsRef.current?.send(JSON.stringify({
+        type: 'OFFER',
+        targetId: peerId,
+        sdp: offer.sdp,
+      }));
+    }
+  };
+
+  const handleOffer = async (msg: any) => {
+    await createPeerConnection(msg.fromId, msg.fromNick, false);
+    const peer = peersRef.current.get(msg.fromId);
+    if (!peer) return;
+
+    await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+    const answer = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(answer);
+
+    wsRef.current?.send(JSON.stringify({
+      type: 'ANSWER',
+      targetId: msg.fromId,
+      sdp: answer.sdp,
+    }));
+  };
+
+  const handleAnswer = async (msg: any) => {
+    const peer = peersRef.current.get(msg.fromId);
+    if (!peer) return;
+    await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
+  };
+
+  const handleIceCandidate = async (msg: any) => {
+    const peer = peersRef.current.get(msg.fromId);
+    if (!peer) return;
+    await peer.pc.addIceCandidate(new RTCIceCandidate({
+      candidate: msg.candidate,
+      sdpMid: msg.sdpMid,
+      sdpMLineIndex: msg.sdpMLineIndex,
+    }));
+  };
+
+  const removePeer = (peerId: string) => {
+    const peer = peersRef.current.get(peerId);
+    if (peer) {
+      peer.pc.close();
+      peersRef.current.delete(peerId);
+      updatePeersState();
+    }
+  };
+
+  const cleanupPeers = () => {
+    peersRef.current.forEach(p => p.pc.close());
+    peersRef.current.clear();
+    updatePeersState();
+  };
+
+  const updatePeersState = () => {
+    setPeers(Array.from(peersRef.current.values()));
+  };
+
+  const disconnectAll = () => {
+    if (wsRef.current) wsRef.current.close();
+    cleanupPeers();
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+  };
+
+  // ==================== PTT ====================
+  let lastTap = 0;
+
+  const handlePTTPress = async () => {
+    const now = Date.now();
+    if (now - lastTap < 300) {
+      // Doble tap = lock
+      setIsPttLocked(!isPttLocked);
+      if (!isPttLocked) {
+        await startTransmission();
+      } else {
+        stopTransmission();
+      }
+      lastTap = 0;
+      return;
+    }
+    lastTap = now;
+
+    await startTransmission();
+  };
+
+  const handlePTTRelease = () => {
+    if (isPttLocked) return;
+    stopTransmission();
+  };
+
+  const startTransmission = async () => {
+    if (isTransmitting) return;
+    
+    try {
+      const stream = await getLocalStream();
+      stream.getAudioTracks().forEach(t => (t.enabled = true));
+      
+      // También habilitar en todas las conexiones
+      peersRef.current.forEach(peer => {
+        peer.pc.getSenders().forEach(sender => {
+          if (sender.track) sender.track.enabled = true;
+        });
+      });
+
+      setIsTransmitting(true);
+      Vibration.vibrate(40);
+    } catch (err) {
+      console.error('Mic error:', err);
+    }
+  };
+
+  const stopTransmission = () => {
+    if (!isTransmitting) return;
+    
+    const stream = localStreamRef.current;
+    if (stream) {
+      stream.getAudioTracks().forEach(t => (t.enabled = false));
+    }
+    
+    peersRef.current.forEach(peer => {
+      peer.pc.getSenders().forEach(sender => {
+        if (sender.track) sender.track.enabled = false;
+      });
+    });
+
+    setIsTransmitting(false);
+    setIsPttLocked(false);
+  };
+
+  // ==================== PING ====================
+  const startPingLoop = (ws: WebSocket) => {
+    const interval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'PING', ts: performance.now() }));
+      } else {
+        clearInterval(interval);
+      }
+    }, 5000);
+  };
+
+  // ==================== RENDER ====================
+  return (
+    <View style={styles.container}>
+      <KeepAwake />
+      <StatusBar barStyle="light-content" backgroundColor="#080c14" />
+
+      {/* HEADER */}
+      <View style={styles.header}>
+        <View style={styles.headerLeft}>
+          <View style={styles.logo}>
+            <Text style={styles.logoIcon}>🏍️</Text>
+          </View>
+          <View>
+            <Text style={styles.title}>
+              RiderCom <Text style={styles.badge}>MESH</Text>
+            </Text>
+            <Text style={styles.subtitle}>
+              📡 {netType} • {isConnected ? '🟢 Conectado' : '🔴 Desconectado'}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity onPress={() => setShowSettings(!showSettings)} style={styles.iconBtn}>
+          <Text style={styles.iconBtnText}>⚙️</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* SETTINGS PANEL */}
+      {showSettings && (
+        <View style={styles.settingsPanel}>
+          <Text style={styles.settingsTitle}>⚙️ Configurar Sala</Text>
+          <Text style={styles.label}>Código de sala:</Text>
+          <TextInput
+            style={styles.input}
+            value={roomCode}
+            onChangeText={setRoomCode}
+            autoCapitalize="characters"
+            maxLength={12}
+          />
+          <Text style={styles.label}>Servidor:</Text>
+          <TextInput
+            style={styles.input}
+            value={serverUrl}
+            onChangeText={setServerUrl}
+            autoCapitalize="none"
+          />
+          <Text style={styles.label}>Tu nombre:</Text>
+          <TextInput
+            style={styles.input}
+            value={nickname}
+            onChangeText={setNickname}
+          />
+          <TouchableOpacity
+            style={styles.connectBtn}
+            onPress={() => {
+              disconnectAll();
+              setTimeout(connectSignaling, 500);
+              setShowSettings(false);
+            }}>
+            <Text style={styles.connectBtnText}>🔄 Reconectar</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* STATS */}
+      <View style={styles.statsRow}>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>LATENCIA</Text>
+          <Text style={styles.statValue}>{latency ?? '--'} ms</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>PILOTOS</Text>
+          <Text style={styles.statValue}>{peers.length}</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>RED</Text>
+          <Text style={[styles.statValue, { color: '#3b82f6' }]}>{netType}</Text>
+        </View>
+      </View>
+
+      {/* SALA INFO */}
+      <View style={styles.roomInfo}>
+        <Text style={styles.roomLabel}>Sala: <Text style={styles.roomCode}>{roomCode}</Text></Text>
+        <Text style={styles.roomStatus}>
+          {peers.length === 0 ? 'Solo tú' : `${peers.length} piloto${peers.length > 1 ? 's' : ''} conectado${peers.length > 1 ? 's' : ''}`}
+        </Text>
+      </View>
+
+      {/* PTT BUTTON */}
+      <View style={styles.pttContainer}>
+        <Text style={styles.pttTitle}>
+          {isTransmitting ? '🔴 TRANSMITIENDO' : '⚪ EN ESPERA'}
+        </Text>
+        <Text style={styles.pttSubtitle}>
+          {isTransmitting
+            ? isPttLocked
+              ? 'Presiona de nuevo para soltar'
+              : 'Tus compañeros te escuchan...'
+            : 'Mantén presionado para hablar'}
+        </Text>
+
+        <TouchableOpacity
+          style={[
+            styles.pttButton,
+            isTransmitting && styles.pttButtonActive,
+          ]}
+          onPressIn={handlePTTPress}
+          onPressOut={handlePTTRelease}
+          activeOpacity={0.8}>
+          <View style={[styles.micCircle, isTransmitting && styles.micCircleActive]}>
+            <Text style={[styles.micIcon, isTransmitting && styles.micIconActive]}>
+              🎙️
+            </Text>
+          </View>
+          <Text style={[styles.pttLabel, isTransmitting && styles.pttLabelActive]}>
+            {isTransmitting ? (isPttLocked ? '🔒 BLOQUEADO' : 'HABLAR') : 'PRESIONAR'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* PEERS LIST */}
+      <ScrollView style={styles.peersList}>
+        <Text style={styles.peersTitle}>👥 Pilotos en sala</Text>
+        {peers.length === 0 ? (
+          <View style={styles.emptyPeer}>
+            <Text style={styles.emptyPeerText}>
+              Conecta a una sala para ver a los demás pilotos
+            </Text>
+          </View>
+        ) : (
+          peers.map(peer => (
+            <View key={peer.id} style={styles.peerItem}>
+              <Text style={styles.peerIcon}>👤</Text>
+              <Text style={styles.peerName}>{peer.nick}</Text>
+              <View style={styles.peerStatus}>
+                <Text style={styles.peerStatusText}>● Conectado</Text>
+              </View>
+            </View>
+          ))
+        )}
+      </ScrollView>
+
+      {/* FOOTER */}
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>
+          RiderCom Mesh Pro • WebRTC • {netType}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ==================== ESTILOS ====================
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#080c14',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    paddingTop: 50,
+    backgroundColor: '#111827',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f293d',
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  logo: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#f59e0b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  logoIcon: {
+    fontSize: 20,
+  },
+  title: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  badge: {
+    color: '#f59e0b',
+    fontSize: 10,
+    backgroundColor: 'rgba(245,158,11,0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.3)',
+    overflow: 'hidden',
+  },
+  subtitle: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  iconBtn: {
+    padding: 8,
+    backgroundColor: '#1f2937',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  iconBtnText: {
+    fontSize: 16,
+  },
+  settingsPanel: {
+    backgroundColor: '#111827',
+    margin: 12,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1f293d',
+  },
+  settingsTitle: {
+    color: '#f59e0b',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+  label: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  input: {
+    backgroundColor: '#0f172a',
+    color: '#fff',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    fontSize: 14,
+    fontFamily: 'monospace',
+  },
+  connectBtn: {
+    backgroundColor: '#f59e0b',
+    padding: 14,
+    borderRadius: 12,
+    marginTop: 16,
+    alignItems: 'center',
+  },
+  connectBtnText: {
+    color: '#080c14',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    padding: 12,
+  },
+  statBox: {
+    flex: 1,
+    backgroundColor: '#111827',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1f293d',
+    alignItems: 'center',
+  },
+  statLabel: {
+    color: '#64748b',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
+  statValue: {
+    color: '#f59e0b',
+    fontSize: 16,
+    fontWeight: 'bold',
+    fontFamily: 'monospace',
+    marginTop: 4,
+  },
+  roomInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    marginHorizontal: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1f293d',
+  },
+  roomLabel: {
+    color: '#94a3b8',
+    fontSize: 12,
+  },
+  roomCode: {
+    color: '#f59e0b',
+    fontWeight: 'bold',
+    fontFamily: 'monospace',
+  },
+  roomStatus: {
+    color: '#10b981',
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+  pttContainer: {
+    alignItems: 'center',
+    padding: 24,
+  },
+  pttTitle: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  pttSubtitle: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 4,
+    marginBottom: 20,
+  },
+  pttButton: {
+    width: Math.min(width - 80, 240),
+    height: Math.min(width - 80, 240),
+    borderRadius: Math.min(width - 80, 240) / 2,
+    backgroundColor: '#0f172a',
+    borderWidth: 8,
+    borderColor: '#1e293b',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  pttButtonActive: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#fcd34d',
+    transform: [{ scale: 1.05 }],
+  },
+  micCircle: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#1e293b',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  micCircleActive: {
+    backgroundColor: 'rgba(255,255,255,0.3)',
+  },
+  micIcon: {
+    fontSize: 32,
+    opacity: 0.5,
+  },
+  micIconActive: {
+    opacity: 1,
+  },
+  pttLabel: {
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  pttLabelActive: {
+    color: '#080c14',
+  },
+  peersList: {
+    flex: 1,
+    marginHorizontal: 12,
+    marginTop: 12,
+  },
+  peersTitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  emptyPeer: {
+    backgroundColor: '#0f172a',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    alignItems: 'center',
+  },
+  emptyPeerText: {
+    color: '#64748b',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  peerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    marginBottom: 8,
+  },
+  peerIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  peerName: {
+    color: '#e2e8f0',
+    fontSize: 14,
+    fontWeight: 'bold',
+    flex: 1,
+  },
+  peerStatus: {
+    backgroundColor: 'rgba(16,185,129,0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  peerStatusText: {
+    color: '#10b981',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  footer: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1f293d',
+    alignItems: 'center',
+  },
+  footerText: {
+    color: '#475569',
+    fontSize: 10,
+  },
+});
+```
+
+---
+
+## 4. Servidor de Señalización (`server/signal-server.js`)
+
+```javascript
+const WebSocket = require('ws');
+const http = require('http');
+
+const PORT = process.env.PORT || 8765;
+
+const rooms = new Map(); // room -> Map<ws, {nick, id}>
+const clients = new Map(); // ws -> {room, nick, id}
+
+const STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  // TURN gratuito (limitado, para producción usa uno propio)
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
+];
+
+const server = http.createServer();
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws, req) => {
+  const clientId = Date.now() + Math.random().toString(36).substr(2, 9);
+  console.log(`[+] Cliente conectado: ${clientId}`);
+
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      handleMessage(ws, msg, clientId);
+    } catch (e) {}
+  });
+
+  ws.on('close', () => handleDisconnect(ws));
+  ws.on('error', () => handleDisconnect(ws));
+});
+
+function handleMessage(ws, msg, clientId) {
+  switch (msg.type) {
+    case 'JOIN':
+      handleJoin(ws, msg, clientId);
+      break;
+    case 'OFFER':
+    case 'ANSWER':
+    case 'ICE_CANDIDATE':
+      relayMessage(ws, msg);
+      break;
+    case 'PING':
+      ws.send(JSON.stringify({ type: 'PONG', ts: msg.ts }));
+      break;
+  }
+}
+
+function handleJoin(ws, msg, clientId) {
+  const roomId = (msg.room || 'DEFAULT').toUpperCase();
+  const nick = msg.nick || `Piloto_${clientId.substr(-4)}`;
+
+  // Crear sala
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, new Map());
+  }
+
+  const room = rooms.get(roomId);
+  
+  // Guardar cliente
+  clients.set(ws, { room: roomId, nick, id: clientId });
+  room.set(ws, { nick, id: clientId });
+
+  // Enviar config
+  ws.send(JSON.stringify({
+    type: 'CONFIG',
+    iceServers: STUN_SERVERS,
+    clientId
+  }));
+
+  // Notificar peers existentes
+  const peers = [];
+  room.forEach((info, peerWs) => {
+    if (peerWs !== ws) {
+      peers.push({ nick: info.nick, id: info.id });
+      peerWs.send(JSON.stringify({
+        type: 'PEER_JOINED',
+        nick,
+        id: clientId
+      }));
+    }
+  });
+
+  // Enviar lista al nuevo
+  ws.send(JSON.stringify({
+    type: 'PEERS',
+    peers,
+    you: { nick, id: clientId }
+  }));
+
+  console.log(`[i] ${nick} (${clientId}) unido a '${roomId}' (${room.size} total)`);
+}
+
+function relayMessage(ws, msg) {
+  const client = clients.get(ws);
+  if (!client) return;
+
+  const room = rooms.get(client.room);
+  if (!room) return;
+
+  const targetId = msg.targetId;
+  
+  room.forEach((info, peerWs) => {
+    if (info.id === targetId && peerWs !== ws) {
+      peerWs.send(JSON.stringify({
+        type: msg.type,
+        fromId: client.id,
+        fromNick: client.nick,
+        sdp: msg.sdp,
+        candidate: msg.candidate,
+        sdpMid: msg.sdpMid,
+        sdpMLineIndex: msg.sdpMLineIndex
+      }));
+    }
+  });
+}
+
+function handleDisconnect(ws) {
+  const client = clients.get(ws);
+  if (!client) return;
+
+  const room = rooms.get(client.room);
+  if (room) {
+    room.delete(ws);
+    
+    // Notificar a otros
+    room.forEach((info, peerWs) => {
+      peerWs.send(JSON.stringify({
+        type: 'PEER_LEFT',
+        id: client.id,
+        nick: client.nick
+      }));
+    });
+
+    // Limpiar sala vacía
+    if (room.size === 0) {
+      rooms.delete(client.room);
+    }
+  }
+
+  console.log(`[-] ${client.nick} (${client.id}) desconectado`);
+  clients.delete(ws);
+}
+
+server.listen(PORT, () => {
+  console.log('='.repeat(60));
+  console.log(' 🏍️  RIDERCOM MESH - SERVIDOR DE SEÑALIZACIÓN');
+  console.log('='.repeat(60));
+  console.log(` ► Puerto: ${PORT}`);
+  console.log(` ► WebRTC P2P con STUN/TURN`);
+  console.log(` ► Datos móviles: SÍ (4G/5G compatible)`);
+  console.log('='.repeat(60));
+  console.log(' Desplegar gratis en: Railway.app, Render.com, Fly.io');
+  console.log('='.repeat(60));
+});
+```
+
+---
+
+## 5. `package.json` (raíz del proyecto)
+
+```json
+{
+  "name": "RiderComMesh",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "server": "node server/signal-server.js"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.73.0",
+    "react-native-webrtc": "^118.0.0",
+    "react-native-keep-awake": "^4.0.0",
+    "@react-native-community/netinfo": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.72.0",
+    "typescript": "^5.0.0"
+  }
+}
+```
+
+---
+
+## 6. Pasos para Compilar APK
+
+```bash
+# 1. Instalar dependencias
+npm install
+
+# 2. Para desarrollo (corre en emulador o celular por USB)
+npx react-native run-android
+
+# 3. Para generar APK de release (instalable en cualquier Android)
+cd android
+./gradlew assembleRelease
+
+# El APK queda en:
+# android/app/build/outputs/apk/release/app-release.apk
+```
+
+---
+
+## 7. Desplegar Servidor (Gratis)
+
+### Railway.app (recomendado)
+1. Crea repo en GitHub con `server/signal-server.js`
+2. Ve a [railway.app](https://railway.app) → New Project → Deploy from GitHub
+3. Railway detecta Node.js automáticamente
+4. Obtienes URL tipo `wss://ridercom-produccion.up.railway.app`
+5. Pon esa URL en la app
+
+### O Render.com
+1. [render.com](https://render.com) → New Web Service
+2. Conecta tu repo
+3. Build: `npm install`
+4. Start: `node server/signal-server.js`
+
+---
+
+## Resumen Visual
+
+```
+┌─────────────────┐      WebSocket      ┌──────────────────┐
+│   Celular 1     │ ◄─────────────────► │  Servidor Señal  │
+│  (React Native) │    (JOIN, OFFER,    │   (Railway.app)  │
+│                 │     ANSWER, ICE)    │                  │
+│  ┌───────────┐  │                     │  STUN/TURN config│
+│  │  WebRTC   │  │◄────── P2P UDP ────►│                  │
+│  │   P2P     │  │   (audio directo)   └──────────────────┘
+│  └───────────┘  │            ▲
+└─────────────────┘            │
+                               │
+┌─────────────────┐            │
+│   Celular 2     │◄───────────┘
+│  (React Native) │   P2P directo (UDP)
+│                 │   No pasa por servidor
+│  ┌───────────┐  │
+│  │  WebRTC   │  │
+│  │   P2P     │  │
+│  └───────────┘  │
+└─────────────────┘
+
+✅ Funciona con 4G/5G
+✅ Audio va directo entre celulares (baja latencia)
+✅ Servidor solo hace "presentaciones" (señalización)
+```
+
+---
+
+## ¿Qué necesitas para empezar ahora?
+
+| Requisito | ¿Lo tienes? |
+|---|---|
+| PC con Windows/Mac/Linux | ❓ |
+| Node.js instalado | ❓ |
+| Android Studio instalado | ❓ |
+| Celular Android | ❓ |
+| Cuenta GitHub | ❓ |
+
+Si me dices qué te falta, te guío paso a paso. Si no tienes PC, la única opción real es mejorar tu versión web actual (la que ya funciona en el navegador del celular) con WebRTC en vez de WebSocket.

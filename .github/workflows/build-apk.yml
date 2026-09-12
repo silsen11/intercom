@@ -1,0 +1,45 @@
+name: Compilar APK Android (RiderCom Mesh)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar Código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar Dependencias
+        run: npm ci || npm install
+
+      - name: Ejecutar Verificaciones
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Subir Artefacto del Servidor y Código Listo
+        uses: actions/upload-artifact@v4
+        with:
+          name: ridercom-mesh-release
+          path: |
+            server/
+            src/
+            App.tsx
+            package.json

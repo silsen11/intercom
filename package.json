@@ -1,0 +1,36 @@
+{
+  "name": "ridercom-mesh",
+  "version": "1.0.0",
+  "description": "RiderCom Mesh Pro - Intercomunicador PTT P2P para motociclistas sobre WebRTC",
+  "main": "App.tsx",
+  "scripts": {
+    "dev": "node server/signal-server.js",
+    "server": "node server/signal-server.js",
+    "start": "node server/signal-server.js",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "node ./scripts/lint.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "keywords": [
+    "webrtc",
+    "intercom",
+    "walkie-talkie",
+    "ptt",
+    "motorcycle",
+    "react-native",
+    "termux"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.3.0",
+    "@types/react-native": "^0.72.8",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.7.3"
+  }
+}
