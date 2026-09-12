@@ -8,7 +8,10 @@ const state = {
   nick: 'Piloto_' + Math.floor(1000 + Math.random() * 9000),
   serverUrl: '',
   isTransmitting: false,
-  isLocked: false,
+  isHandsFree: false,        // Modo Manos Libres ("Fijar Manos Libres")
+  isManualPtt: false,        // PTT manual presionado por el piloto
+  isVoiceActive: false,      // Voz humana activa detectada por formantes
+  isFilteringNoise: false,   // Ruido de viento o motor detectado y silenciado
   peers: new Map(), // peerId -> { id, nick, pc, isTalking, pendingCandidates }
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -25,72 +28,63 @@ const state = {
       credential: 'openrelayproject'
     }
   ],
-  localStream: null,     // MediaStream procesado por DSP para transmitir vía WebRTC
-  rawMicStream: null,    // Flujo crudo del micrófono
-  audioCtx: null,        // AudioContext para el DSP
-  dspSource: null,
-  highpassNode: null,    // Filtro pasa-altos para vibraciones y viento
-  lowpassNode: null,     // Filtro pasa-bajos para silbidos de viento
-  presenceNode: null,    // Realce de presencia vocal
-  compressorNode: null,  // Control automático de dinámica y nivel
-  gateGainNode: null,    // Puerta de ruido (Noise Gate)
-  analyserNode: null,    // Analizador de nivel para VAD (Voice Activity Detection)
-  dspMode: localStorage.getItem('ridercom_dsp') || 'standard',
+  localStream: null,         // MediaStream nativo directo hacia WebRTC (Bluetooth SCO)
+  audioCtx: null,            // AudioContext en memoria exclusivamente para análisis acústico
+  voxSourceNode: null,
+  analyserNode: null,
+  voxMode: localStorage.getItem('ridercom_vox_mode') || 'standard',
   selectedAudioInputId: localStorage.getItem('ridercom_input_device') || '',
   selectedAudioOutputId: localStorage.getItem('ridercom_output_device') || '',
-  vadInterval: null,
-  vadTalking: false,
+  voxLoopTimer: null,
+  voxConsecutiveVoice: 0,
+  voxHoldTimer: 0,
   ws: null,
   myId: null
 };
 
-// Perfiles de supresión de ruido externa y anti-retorno (Estilo Teams / Discord Krisp)
-const DSP_PROFILES = {
-  aggressive: {
-    label: 'Moto / Viento Fuerte',
-    threshold: -38, // dB
-    highpass: 130,   // Hz (corta escape y viento grave)
-    lowpass: 5500,  // Hz (corta silbido de viento)
-    ducking: 12     // dB extra de umbral cuando otro habla (anti-retorno de altavoz)
+// Perfiles de discriminación acústica Voz Humana vs Viento/Motor (VOX Inteligente)
+const VOX_PROFILES = {
+  highway: {
+    label: 'Moto / Autopista (Anti-Viento)',
+    minDb: -40,           // Volumen mínimo audible para evaluar
+    minVoiceRatio: 0.38,  // Proporción de formantes vocales vs ruido total
+    minCrest: 2.1,        // Picos de resonancia vocal en 300-3200Hz
+    maxRumbleRatio: 0.62, // Rechazo si los bajos <280Hz dominan (viento/escape)
+    hangoverMs: 320       // Tiempo de resaca (ms) para no recortar finales de frases
   },
   standard: {
-    label: 'Equilibrado',
-    threshold: -44, // dB
-    highpass: 100,   // Hz
-    lowpass: 6500,  // Hz
-    ducking: 10     // dB
+    label: 'Carretera / Equilibrado',
+    minDb: -46,
+    minVoiceRatio: 0.28,
+    minCrest: 1.75,
+    maxRumbleRatio: 0.72,
+    hangoverMs: 380
   },
   sensitive: {
-    label: 'Alta Sensibilidad',
-    threshold: -50, // dB
-    highpass: 80,    // Hz
-    lowpass: 7500,  // Hz
-    ducking: 8      // dB
+    label: 'Ciudad / Alta Sensibilidad',
+    minDb: -52,
+    minVoiceRatio: 0.20,
+    minCrest: 1.5,
+    maxRumbleRatio: 0.82,
+    hangoverMs: 440
   }
 };
 
-function applyDspProfile(mode) {
-  if (!DSP_PROFILES[mode]) mode = 'standard';
-  state.dspMode = mode;
-  localStorage.setItem('ridercom_dsp', mode);
+function applyVoxProfile(mode) {
+  if (!VOX_PROFILES[mode]) mode = 'standard';
+  state.voxMode = mode;
+  localStorage.setItem('ridercom_vox_mode', mode);
 
-  const prof = DSP_PROFILES[mode];
-  if (state.audioCtx && state.audioCtx.state !== 'closed') {
-    if (state.highpassNode) {
-      state.highpassNode.frequency.setValueAtTime(prof.highpass, state.audioCtx.currentTime);
-    }
-    if (state.lowpassNode) {
-      state.lowpassNode.frequency.setValueAtTime(prof.lowpass, state.audioCtx.currentTime);
-    }
-  }
-
-  const elDspLabel = document.getElementById('dspLabel');
-  if (elDspLabel) {
-    elDspLabel.textContent = `Supresión DSP: ${prof.label}`;
-  }
-  const elSelect = document.getElementById('selectNoiseSuppression');
+  const elSelect = document.getElementById('selectVoxMode');
   if (elSelect) {
     elSelect.value = mode;
+  }
+}
+
+function applyDspProfile(mode) {
+  // Compatibilidad con perfil seleccionado
+  if (VOX_PROFILES[mode]) {
+    applyVoxProfile(mode);
   }
 }
 
@@ -303,7 +297,7 @@ elNick.textContent = state.nick;
 document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
-applyDspProfile(state.dspMode);
+applyVoxProfile(state.voxMode);
 refreshAudioDevices();
 
 // Setup Mic Stream & Web Audio DSP Engine
@@ -355,6 +349,9 @@ async function getLocalStream(forceDeviceId) {
 
     state.localStream = stream;
 
+    // Inicializar analizador acústico VOX en paralelo sin alterar el stream WebRTC nativo
+    setupVoxAnalyser(stream);
+
     // Vincular track directo a todos los pares ya conectados
     state.peers.forEach((peer) => {
       if (peer.pc && peer.pc.signalingState !== 'closed') {
@@ -387,6 +384,9 @@ async function getLocalStream(forceDeviceId) {
 async function unlockAudio() {
   try {
     await getLocalStream();
+    if (state.audioCtx && state.audioCtx.state === 'suspended') {
+      await state.audioCtx.resume();
+    }
     // Desbloquear elementos de audio existentes de pares
     document.querySelectorAll('audio').forEach((a) => {
       a.play().catch(() => {});
@@ -758,33 +758,183 @@ function renderPeers() {
 }
 
 // ==========================================
-// AUDIO ENGINE: PTT 100% WEBRTC P2P EN VIVO
+// AUDIO ENGINE: VOX INTELIGENTE & WEBRTC P2P
 // ==========================================
-async function startTalk() {
-  const stream = await getLocalStream();
-  if (!stream) return;
 
-  // Activar tracks de audio WebRTC en tiempo real
-  stream.getAudioTracks().forEach((t) => (t.enabled = true));
+// Configuración del Analizador Acústico VOX (En memoria paralela, sin alterar stream nativo)
+function setupVoxAnalyser(stream) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
 
-  state.isTransmitting = true;
-  updatePttUI();
+    if (!state.audioCtx) {
+      state.audioCtx = new AudioContextClass();
+    }
+    if (state.audioCtx.state === 'suspended') {
+      state.audioCtx.resume().catch(() => {});
+    }
 
-  if ('vibrate' in navigator) navigator.vibrate(40);
-  broadcastTalkState(true);
+    if (state.voxSourceNode) {
+      try { state.voxSourceNode.disconnect(); } catch (e) {}
+    }
+
+    const source = state.audioCtx.createMediaStreamSource(stream);
+    const analyser = state.audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.2;
+    source.connect(analyser);
+
+    state.voxSourceNode = source;
+    state.analyserNode = analyser;
+
+    startVoxLoop();
+  } catch (err) {
+    console.warn('[VOX] Error iniciando analizador acústico:', err);
+  }
 }
 
-function stopTalk() {
-  // Silenciar micrófono local (PTT liberado)
-  if (state.localStream) {
-    state.localStream.getAudioTracks().forEach((t) => (t.enabled = false));
+// Bucle continuo de discriminación espectral: Voz vs Viento/Motor
+function startVoxLoop() {
+  if (state.voxLoopTimer) return;
+
+  const freqData = new Uint8Array(256);
+  const timeData = new Uint8Array(512);
+
+  state.voxLoopTimer = setInterval(() => {
+    if (!state.analyserNode) return;
+
+    state.analyserNode.getByteFrequencyData(freqData);
+    state.analyserNode.getByteTimeDomainData(timeData);
+
+    // 1. RMS y volumen en dB
+    let sumSquares = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      const norm = (timeData[i] - 128) / 128;
+      sumSquares += norm * norm;
+    }
+    const rms = Math.sqrt(sumSquares / timeData.length);
+    const db = 20 * Math.log10(Math.max(rms, 1e-5));
+
+    // 2. Discriminación espectral en 3 bandas:
+    // Bins 0..2: <280 Hz (Rumble grave: viento en casco, escape, motor)
+    let eLow = 0;
+    for (let i = 0; i <= 2; i++) {
+      const v = freqData[i] / 255;
+      eLow += v * v;
+    }
+
+    // Bins 3..34: ~280 Hz a ~3200 Hz (Formantes de voz humana F1, F2, F3)
+    let eVoice = 0;
+    let peakVoice = 0;
+    for (let i = 3; i <= 34; i++) {
+      const v = freqData[i] / 255;
+      const p = v * v;
+      eVoice += p;
+      if (p > peakVoice) peakVoice = p;
+    }
+    const meanVoice = eVoice / 32;
+    const crestFactor = peakVoice / (meanVoice + 1e-5);
+
+    // Bins 35..80: ~3300 Hz a ~7500 Hz (Soplido agudo de viento)
+    let eHigh = 0;
+    for (let i = 35; i <= 80; i++) {
+      const v = freqData[i] / 255;
+      eHigh += v * v;
+    }
+
+    const eTotal = eLow + eVoice + eHigh;
+    const voiceRatio = eVoice / (eTotal + 1e-5);
+    const rumbleRatio = eLow / (eTotal + 1e-5);
+
+    const prof = VOX_PROFILES[state.voxMode] || VOX_PROFILES.standard;
+
+    // Regla de decisión acústica
+    const isAudible = db > prof.minDb;
+    const isFormantStructure = voiceRatio >= prof.minVoiceRatio && crestFactor >= prof.minCrest;
+    const isRumbleDominant = rumbleRatio > prof.maxRumbleRatio && voiceRatio < (prof.minVoiceRatio * 1.15);
+
+    const isRawVoice = isAudible && isFormantStructure && !isRumbleDominant;
+    const isRawNoise = isAudible && !isRawVoice;
+
+    // Lógica temporal de activación (Ataque y Resaca / Hangover)
+    if (isRawVoice) {
+      state.voxConsecutiveVoice++;
+      if (state.voxConsecutiveVoice >= 2) {
+        state.isVoiceActive = true;
+        state.voxHoldTimer = prof.hangoverMs;
+      }
+    } else {
+      state.voxConsecutiveVoice = 0;
+      if (state.voxHoldTimer > 0) {
+        state.voxHoldTimer -= 30;
+        state.isVoiceActive = true;
+      } else {
+        state.isVoiceActive = false;
+      }
+    }
+
+    state.isFilteringNoise = isRawNoise && !state.isVoiceActive;
+
+    // Actualizar medidor visual en modal de configuración
+    updateVoxMeterUI(db, isRawVoice, isRawNoise);
+
+    // Sincronizar transmisión
+    syncTransmissionState();
+  }, 30);
+}
+
+// Medidor visual de calibración en Ajustes
+function updateVoxMeterUI(db, isVoice, isNoise) {
+  const elBar = document.getElementById('voxMeterBar');
+  const elStatus = document.getElementById('voxMeterStatus');
+  if (!elBar || !elStatus) return;
+
+  const pct = Math.min(Math.max(((db + 60) / 45) * 100, 0), 100);
+  elBar.style.width = `${pct}%`;
+
+  if (isVoice) {
+    elBar.className = 'vox-meter-bar voice';
+    elStatus.className = 'vox-meter-status voice';
+    elStatus.textContent = '🟢 VOZ HUMANA DETECTADA';
+  } else if (isNoise) {
+    elBar.className = 'vox-meter-bar noise';
+    elStatus.className = 'vox-meter-status noise';
+    elStatus.textContent = '🟡 RUIDO / VIENTO BLOQUEADO';
+  } else {
+    elBar.className = 'vox-meter-bar';
+    elStatus.className = 'vox-meter-status';
+    elStatus.textContent = '⚪ Silencio ambiental';
+  }
+}
+
+// Sincronización precisa de pistas WebRTC nativas
+function syncTransmissionState() {
+  let shouldTransmit = false;
+
+  if (state.isManualPtt) {
+    shouldTransmit = true;
+  } else if (state.isHandsFree) {
+    shouldTransmit = state.isVoiceActive;
+  } else {
+    shouldTransmit = false;
   }
 
-  state.isTransmitting = false;
-  state.isLocked = false;
-  updatePttUI();
+  // Activar o desactivar pistas de audio nativas WebRTC
+  if (state.localStream) {
+    state.localStream.getAudioTracks().forEach((track) => {
+      if (track.enabled !== shouldTransmit) {
+        track.enabled = shouldTransmit;
+      }
+    });
+  }
 
-  broadcastTalkState(false);
+  if (state.isTransmitting !== shouldTransmit) {
+    state.isTransmitting = shouldTransmit;
+    broadcastTalkState(shouldTransmit);
+    if ('vibrate' in navigator && shouldTransmit) navigator.vibrate(30);
+  }
+
+  updatePttUI();
 }
 
 function broadcastTalkState(isTalking) {
@@ -794,46 +944,107 @@ function broadcastTalkState(isTalking) {
 }
 
 function updatePttUI() {
-  if (state.isTransmitting) {
-    elPttBtn.className = `ptt-button ${state.isLocked ? 'locked' : 'active'}`;
-    elPttTitle.textContent = state.isLocked ? '🔴 MANOS LIBRES ACTIVO' : '🎙️ TRANSMITIENDO VOZ';
-    elPttLabel.textContent = state.isLocked ? 'BLOQUEADO' : 'HABLANDO';
+  const elDspDot = document.getElementById('dspDot');
+  const elDspLabel = document.getElementById('dspLabel');
+
+  if (state.isManualPtt) {
+    elPttBtn.className = 'ptt-button active';
+    elPttTitle.textContent = '🎙️ TRANSMITIENDO VOZ (PTT)';
+    elPttLabel.textContent = 'HABLANDO';
     elMicIcon.textContent = '📢';
-    elLockBtn.className = `lock-btn ${state.isLocked ? 'active' : ''}`;
-    elLockBtn.textContent = state.isLocked ? '🔓 Liberar Micrófono' : '🔒 Fijar Manos Libres';
+    if (elDspDot) elDspDot.style.backgroundColor = '#dc2626';
+    if (elDspLabel) elDspLabel.textContent = 'VOX: PTT Manual';
+  } else if (state.isHandsFree) {
+    elLockBtn.className = 'lock-btn active';
+    elLockBtn.textContent = '🔓 Liberar Manos Libres';
+
+    if (state.isTransmitting) {
+      elPttBtn.className = 'ptt-button active';
+      elPttTitle.textContent = '🟢 VOZ EN VIVO (MANOS LIBRES)';
+      elPttLabel.textContent = 'HABLANDO';
+      elMicIcon.textContent = '📢';
+      if (elDspDot) {
+        elDspDot.style.backgroundColor = '#10b981';
+        elDspDot.style.boxShadow = '0 0 10px rgba(16, 185, 129, 0.8)';
+      }
+      if (elDspLabel) elDspLabel.textContent = 'VOX: 🟢 Voz Transmitiendo';
+    } else if (state.isFilteringNoise) {
+      elPttBtn.className = 'ptt-button locked';
+      elPttTitle.textContent = '🟡 FILTRANDO VIENTO / MOTOR';
+      elPttLabel.textContent = 'BLOQUEADO';
+      elMicIcon.textContent = '🛡️';
+      if (elDspDot) {
+        elDspDot.style.backgroundColor = '#f59e0b';
+        elDspDot.style.boxShadow = '0 0 8px rgba(245, 158, 11, 0.6)';
+      }
+      if (elDspLabel) elDspLabel.textContent = 'VOX: 🟡 Filtrando Viento';
+    } else {
+      elPttBtn.className = 'ptt-button locked';
+      elPttTitle.textContent = '⚪ MANOS LIBRES (ESPERANDO VOZ)';
+      elPttLabel.textContent = 'VOX AUTO';
+      elMicIcon.textContent = '🎙️';
+      if (elDspDot) {
+        elDspDot.style.backgroundColor = '#38bdf8';
+        elDspDot.style.boxShadow = '0 0 6px rgba(56, 189, 248, 0.5)';
+      }
+      if (elDspLabel) elDspLabel.textContent = 'VOX: 🔵 En Espera';
+    }
   } else {
+    elLockBtn.className = 'lock-btn';
+    elLockBtn.textContent = '🔒 Fijar Manos Libres';
     elPttBtn.className = 'ptt-button';
     elPttTitle.textContent = '⚪ EN ESPERA';
     elPttLabel.textContent = 'PTT HABLAR';
     elMicIcon.textContent = '🎙️';
-    elLockBtn.className = 'lock-btn';
-    elLockBtn.textContent = '🔒 Fijar Manos Libres';
+    if (elDspDot) {
+      elDspDot.style.backgroundColor = '#64748b';
+      elDspDot.style.boxShadow = 'none';
+    }
+    if (elDspLabel) elDspLabel.textContent = 'VOX: En Reposo';
   }
 }
 
 // PTT Touch & Pointer Events
 let lastTap = 0;
-elPttBtn.addEventListener('pointerdown', (e) => {
+elPttBtn.addEventListener('pointerdown', async (e) => {
   e.preventDefault();
+  await getLocalStream();
+
   const now = Date.now();
   if (now - lastTap < 350) {
-    state.isLocked = !state.isLocked;
-    if (state.isLocked) startTalk(); else stopTalk();
+    state.isHandsFree = !state.isHandsFree;
+    if (!state.isHandsFree) {
+      state.isVoiceActive = false;
+      state.isFilteringNoise = false;
+    }
+    state.isManualPtt = false;
+    syncTransmissionState();
     lastTap = 0;
     return;
   }
   lastTap = now;
 
-  if (!state.isLocked) startTalk();
+  if (!state.isHandsFree) {
+    state.isManualPtt = true;
+    syncTransmissionState();
+  }
 });
 
 window.addEventListener('pointerup', () => {
-  if (!state.isLocked && state.isTransmitting) stopTalk();
+  if (state.isManualPtt) {
+    state.isManualPtt = false;
+    syncTransmissionState();
+  }
 });
 
-elLockBtn.addEventListener('click', () => {
-  state.isLocked = !state.isLocked;
-  if (state.isLocked) startTalk(); else stopTalk();
+elLockBtn.addEventListener('click', async () => {
+  await getLocalStream();
+  state.isHandsFree = !state.isHandsFree;
+  if (!state.isHandsFree) {
+    state.isVoiceActive = false;
+    state.isFilteringNoise = false;
+  }
+  syncTransmissionState();
 });
 
 // Settings Modal
@@ -843,6 +1054,11 @@ document.getElementById('btnSettings').addEventListener('click', () => {
 });
 
 document.getElementById('btnDeviceBadge')?.addEventListener('click', () => {
+  elModal.classList.remove('hidden');
+  refreshAudioDevices();
+});
+
+document.getElementById('btnDspBadge')?.addEventListener('click', () => {
   elModal.classList.remove('hidden');
   refreshAudioDevices();
 });
@@ -860,9 +1076,9 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
 
-  const selectedDsp = document.getElementById('selectNoiseSuppression')?.value;
-  if (selectedDsp) {
-    applyDspProfile(selectedDsp);
+  const selectedVox = document.getElementById('selectVoxMode')?.value;
+  if (selectedVox) {
+    applyVoxProfile(selectedVox);
   }
 
   const selectedInput = document.getElementById('selectAudioInput')?.value ?? '';
@@ -880,7 +1096,7 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   elNick.textContent = state.nick;
   elModal.classList.add('hidden');
 
-  // Solo reconectar si cambiaron datos de conexión a la sala, NO por cambiar de micrófono
+  // Solo reconectar si cambiaron datos de conexión a la sala, NO por cambiar de micrófono o VOX
   if (state.room !== oldRoom || state.nick !== oldNick || state.serverUrl !== oldServer) {
     if (state.ws) state.ws.close();
   }

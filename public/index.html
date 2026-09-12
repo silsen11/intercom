@@ -75,9 +75,9 @@
       </button>
 
       <div class="ptt-footer-badges">
-        <div class="dsp-indicator">
-          <span class="dsp-dot"></span>
-          <span id="dspLabel">DSP: Equilibrado</span>
+        <div id="btnDspBadge" class="dsp-indicator" title="Toca para ajustar el filtro VOX / DSP">
+          <span id="dspDot" class="dsp-dot"></span>
+          <span id="dspLabel">VOX: Espera</span>
         </div>
 
         <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
@@ -125,13 +125,22 @@
           </select>
         </div>
 
-        <label class="input-label" for="selectNoiseSuppression">SUPRESIÓN DE RUIDO Y RETORNO (DSP):</label>
-        <select id="selectNoiseSuppression" class="input-field">
-          <option value="aggressive">🏍️ Moto / Viento Fuerte (Filtro Máximo)</option>
-          <option value="standard" selected>🎧 Equilibrado (Recomendado - Nítido)</option>
-          <option value="sensitive">🎙️ Alta Sensibilidad (Ambiente Silencioso)</option>
+        <label class="input-label" for="selectVoxMode">ACTIVACIÓN INTELIGENTE POR VOZ (VOX MOTO):</label>
+        <select id="selectVoxMode" class="input-field">
+          <option value="highway">🏍️ Moto / Autopista (Filtro Anti-Viento Agresivo)</option>
+          <option value="standard" selected>⚖️ Carretera / Equilibrado (Recomendado)</option>
+          <option value="sensitive">🗣️ Ciudad / Alta Sensibilidad (Voz Suave)</option>
         </select>
-        <p class="settings-hint">Filtra el viento exterior, ruidos de motor y bloquea el eco repetitivo entre teléfonos.</p>
+        <div class="vox-meter-container">
+          <div class="vox-meter-labels">
+            <span>Calibración de Voz vs Viento:</span>
+            <span id="voxMeterStatus" class="vox-meter-status">Esperando audio...</span>
+          </div>
+          <div class="vox-meter-bar-bg">
+            <div id="voxMeterBar" class="vox-meter-bar"></div>
+          </div>
+        </div>
+        <p class="settings-hint">Analiza formantes vocales humanos para transmitir solo tu voz y rechazar viento y escape en Manos Libres.</p>
 
         <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
         <input type="text" id="inputServer" class="input-field" value="">
