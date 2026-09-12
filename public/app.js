@@ -25,10 +25,100 @@ const state = {
       credential: 'openrelayproject'
     }
   ],
-  localStream: null,
+  localStream: null,     // MediaStream procesado por DSP para transmitir vía WebRTC
+  rawMicStream: null,    // Flujo crudo del micrófono
+  audioCtx: null,        // AudioContext para el DSP
+  dspSource: null,
+  highpassNode: null,    // Filtro pasa-altos para vibraciones y viento
+  lowpassNode: null,     // Filtro pasa-bajos para silbidos de viento
+  presenceNode: null,    // Realce de presencia vocal
+  compressorNode: null,  // Control automático de dinámica y nivel
+  gateGainNode: null,    // Puerta de ruido (Noise Gate)
+  analyserNode: null,    // Analizador de nivel para VAD (Voice Activity Detection)
+  dspMode: localStorage.getItem('ridercom_dsp') || 'standard',
+  vadInterval: null,
+  vadTalking: false,
   ws: null,
   myId: null
 };
+
+// Perfiles de supresión de ruido externa y anti-retorno (Estilo Teams / Discord Krisp)
+const DSP_PROFILES = {
+  aggressive: {
+    label: 'Moto / Viento Fuerte',
+    threshold: -38, // dB
+    highpass: 130,   // Hz (corta escape y viento grave)
+    lowpass: 5500,  // Hz (corta silbido de viento)
+    ducking: 12     // dB extra de umbral cuando otro habla (anti-retorno de altavoz)
+  },
+  standard: {
+    label: 'Equilibrado',
+    threshold: -44, // dB
+    highpass: 100,   // Hz
+    lowpass: 6500,  // Hz
+    ducking: 10     // dB
+  },
+  sensitive: {
+    label: 'Alta Sensibilidad',
+    threshold: -50, // dB
+    highpass: 80,    // Hz
+    lowpass: 7500,  // Hz
+    ducking: 8      // dB
+  }
+};
+
+function applyDspProfile(mode) {
+  if (!DSP_PROFILES[mode]) mode = 'standard';
+  state.dspMode = mode;
+  localStorage.setItem('ridercom_dsp', mode);
+
+  const prof = DSP_PROFILES[mode];
+  if (state.audioCtx && state.audioCtx.state !== 'closed') {
+    if (state.highpassNode) {
+      state.highpassNode.frequency.setValueAtTime(prof.highpass, state.audioCtx.currentTime);
+    }
+    if (state.lowpassNode) {
+      state.lowpassNode.frequency.setValueAtTime(prof.lowpass, state.audioCtx.currentTime);
+    }
+  }
+
+  const elDspLabel = document.getElementById('dspLabel');
+  if (elDspLabel) {
+    elDspLabel.textContent = `Supresión DSP: ${prof.label}`;
+  }
+  const elSelect = document.getElementById('selectNoiseSuppression');
+  if (elSelect) {
+    elSelect.value = mode;
+  }
+}
+
+// Optimización de SDP Opus para activar AEC por hardware y DTX (Supresión de silencio)
+function optimizeOpusSdp(sdp) {
+  try {
+    const match = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i);
+    if (!match) return sdp;
+    const pt = match[1];
+    // stereo=0 y sprop-stereo=0 fuerzan mono en Android (obligatorio para activar AEC hardware)
+    // usedtx=1 detiene la transmisión de paquetes en pausas/silencio
+    // useinbandfec=1 protege contra paquetes perdidos en 4G/5G
+    const opusParams = 'minptime=10;useinbandfec=1;usedtx=1;stereo=0;sprop-stereo=0;maxaveragebitrate=32000';
+
+    if (sdp.includes(`a=fmtp:${pt}`)) {
+      return sdp.replace(
+        new RegExp(`a=fmtp:${pt}\\s+[^\\r\\n]+`, 'g'),
+        `a=fmtp:${pt} ${opusParams}`
+      );
+    } else {
+      return sdp.replace(
+        new RegExp(`a=rtpmap:${pt}\\s+opus\\/48000\\/2[\\r\\n]+`, 'g'),
+        (m) => `${m}a=fmtp:${pt} ${opusParams}\r\n`
+      );
+    }
+  } catch (e) {
+    console.warn('[WebRTC] Error optimizando SDP Opus:', e);
+    return sdp;
+  }
+}
 
 // Auto-detect server URL from current host
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -59,8 +149,9 @@ elNick.textContent = state.nick;
 document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
+applyDspProfile(state.dspMode);
 
-// Setup Mic Stream & Unlock Mobile Audio
+// Setup Mic Stream & Web Audio DSP Engine
 async function getLocalStream() {
   if (state.localStream && state.localStream.active) {
     const tracks = state.localStream.getAudioTracks();
@@ -68,29 +159,118 @@ async function getLocalStream() {
       return state.localStream;
     }
   }
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    // Restricciones de audio de nivel empresarial (Teams / Meet)
+    const rawStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+        channelCount: { ideal: 1 }, // Mono estricto para activar AEC en Android
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        // Flags WebKit / Chrome
+        googEchoCancellation: { ideal: true },
+        googAutoGainControl: { ideal: true },
+        googNoiseSuppression: { ideal: true },
+        googHighpassFilter: { ideal: true },
+        googTypingNoiseDetection: { ideal: true },
+        googAudioMirroring: { ideal: false }
       },
       video: false
     });
 
-    // PTT mute by default
-    stream.getAudioTracks().forEach((t) => (t.enabled = false));
-    state.localStream = stream;
+    state.rawMicStream = rawStream;
+
+    // Inicializar AudioContext
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!state.audioCtx || state.audioCtx.state === 'closed') {
+      state.audioCtx = new AudioCtx({ latencyHint: 'interactive' });
+    }
+    const ctx = state.audioCtx;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    // Desconectar fuente previa si existía
+    if (state.dspSource) {
+      try { state.dspSource.disconnect(); } catch (e) {}
+    }
+
+    const source = ctx.createMediaStreamSource(rawStream);
+    state.dspSource = source;
+
+    const prof = DSP_PROFILES[state.dspMode] || DSP_PROFILES.standard;
+
+    // 1. High-Pass Filter: corta vibraciones graves del motor y golpes de viento
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = prof.highpass;
+    highpass.Q.value = 0.707;
+    state.highpassNode = highpass;
+
+    // 2. Low-Pass Filter: corta silbidos agudos de aire en carretera
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = prof.lowpass;
+    lowpass.Q.value = 0.707;
+    state.lowpassNode = lowpass;
+
+    // 3. Speech Presence EQ: +3.5dB a 2200Hz para máxima inteligibilidad en casco
+    const presence = ctx.createBiquadFilter();
+    presence.type = 'peaking';
+    presence.frequency.value = 2200;
+    presence.Q.value = 1.0;
+    presence.gain.value = 3.5;
+    state.presenceNode = presence;
+
+    // 4. Dynamics Compressor: nivelación automática de voz
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.value = -24;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 5;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.15;
+    state.compressorNode = compressor;
+
+    // 5. Analyser para VAD y medición RMS en tiempo real
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.3;
+    state.analyserNode = analyser;
+
+    // 6. Noise Gate (Puerta de ruido)
+    const gateGain = ctx.createGain();
+    gateGain.gain.value = 0.0; // Inicia cerrada
+    state.gateGainNode = gateGain;
+
+    // 7. Destino final hacia WebRTC
+    const destination = ctx.createMediaStreamDestination();
+
+    // Conexión en cascada
+    source.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(presence);
+    presence.connect(compressor);
+    compressor.connect(analyser);
+    compressor.connect(gateGain);
+    gateGain.connect(destination);
+
+    const processedStream = destination.stream;
+    processedStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    state.localStream = processedStream;
+
+    // Iniciar bucle de monitoreo VAD
+    startVadLoop();
 
     // Vincular track a todos los pares que ya estén conectados
     state.peers.forEach((peer) => {
       if (peer.pc && peer.pc.signalingState !== 'closed') {
         const senders = peer.pc.getSenders();
-        stream.getAudioTracks().forEach((t) => {
+        processedStream.getAudioTracks().forEach((t) => {
           const alreadyAdded = senders.some((s) => s.track === t);
           if (!alreadyAdded) {
             try {
-              peer.pc.addTrack(t, stream);
+              peer.pc.addTrack(t, processedStream);
             } catch (e) {}
           }
         });
@@ -101,22 +281,91 @@ async function getLocalStream() {
       elUnlockBanner.classList.add('hidden');
     }
 
-    return stream;
+    return processedStream;
   } catch (err) {
     console.warn('[Audio] Esperando permiso del micrófono:', err);
     return null;
   }
 }
 
+// Bucle Inteligente VAD (Voice Activity Detection) con Anti-Retorno / Ducking
+function startVadLoop() {
+  if (state.vadInterval) return;
+
+  const dataArray = new Float32Array(512);
+  let holdTimer = 0;
+
+  state.vadInterval = setInterval(() => {
+    if (!state.analyserNode || !state.gateGainNode || !state.audioCtx) return;
+
+    // Si no estamos transmitiendo en absoluto (mic silenciado): compuerta a 0
+    if (!state.isTransmitting) {
+      if (state.gateGainNode.gain.value !== 0) {
+        state.gateGainNode.gain.setValueAtTime(0, state.audioCtx.currentTime);
+      }
+      return;
+    }
+
+    // Verificar si algún compañero está hablando en este momento
+    let someoneElseTalking = false;
+    state.peers.forEach((peer) => {
+      if (peer.isTalking) someoneElseTalking = true;
+    });
+
+    // En PTT manual (botón presionado con el dedo): abrir compuerta directamente
+    const isManualPtt = state.isTransmitting && !state.isLocked;
+    if (isManualPtt) {
+      state.gateGainNode.gain.setTargetAtTime(1.0, state.audioCtx.currentTime, 0.008);
+      return;
+    }
+
+    // Modo Manos Libres Bloqueado (Locked):
+    state.analyserNode.getFloatTimeDomainData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i] * dataArray[i];
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+    const db = 20 * Math.log10(Math.max(rms, 1e-5));
+
+    const prof = DSP_PROFILES[state.dspMode] || DSP_PROFILES.standard;
+    let threshold = prof.threshold;
+
+    // DUCKING ANTI-RETORNO:
+    // Si otro compañero está hablando, aumentamos el umbral para evitar que la voz
+    // emitida por el altavoz del teléfono vuelva a filtrarse al micrófono.
+    if (someoneElseTalking) {
+      threshold += prof.ducking;
+    }
+
+    if (db > threshold) {
+      // Voz real detectada: abrir puerta de ruido suavemente (8ms)
+      state.gateGainNode.gain.setTargetAtTime(1.0, state.audioCtx.currentTime, 0.008);
+      holdTimer = 250; // Mantener 250ms tras última vocal para no cortar palabras
+      if (!state.vadTalking) {
+        state.vadTalking = true;
+        broadcastTalkState(true);
+      }
+    } else {
+      if (holdTimer > 0) {
+        holdTimer -= 30;
+      } else {
+        // Silencio o ruido exterior: cerrar puerta de ruido suavemente (40ms)
+        state.gateGainNode.gain.setTargetAtTime(0.0, state.audioCtx.currentTime, 0.04);
+        if (state.vadTalking) {
+          state.vadTalking = false;
+          broadcastTalkState(false);
+        }
+      }
+    }
+  }, 30);
+}
+
 async function unlockAudio() {
   try {
     await getLocalStream();
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (AudioContextClass) {
-      const ctx = new AudioContextClass();
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
+    if (state.audioCtx && state.audioCtx.state === 'suspended') {
+      await state.audioCtx.resume();
     }
     // Desbloquear elementos de audio existentes de pares
     document.querySelectorAll('audio').forEach((a) => {
@@ -323,11 +572,12 @@ async function createPeerConnection(peerId, nick, isInitiator) {
   if (isInitiator) {
     try {
       const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const sdpOpt = optimizeOpusSdp(offer.sdp);
+      await pc.setLocalDescription(new RTCSessionDescription({ type: offer.type, sdp: sdpOpt }));
       state.ws.send(JSON.stringify({
         type: 'OFFER',
         targetId: peerId,
-        sdp: offer.sdp
+        sdp: sdpOpt
       }));
     } catch (err) {
       console.error(`[WebRTC] Error al crear oferta para ${peerId}:`, err);
@@ -355,12 +605,13 @@ async function handleOffer(msg) {
     }
 
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const sdpOpt = optimizeOpusSdp(answer.sdp);
+    await pc.setLocalDescription(new RTCSessionDescription({ type: answer.type, sdp: sdpOpt }));
 
     state.ws.send(JSON.stringify({
       type: 'ANSWER',
       targetId: msg.fromId,
-      sdp: answer.sdp
+      sdp: sdpOpt
     }));
   } catch (err) {
     console.error(`[WebRTC] Error procesando OFFER de ${msg.fromId}:`, err);
@@ -490,30 +741,52 @@ async function startTalk() {
   const stream = await getLocalStream();
   if (!stream) return;
 
+  if (state.audioCtx && state.audioCtx.state === 'suspended') {
+    await state.audioCtx.resume().catch(() => {});
+  }
+
   // Activar tracks de audio WebRTC en tiempo real
   stream.getAudioTracks().forEach((t) => (t.enabled = true));
 
   state.isTransmitting = true;
+
+  // En PTT manual abrimos la compuerta directamente
+  if (!state.isLocked && state.gateGainNode && state.audioCtx) {
+    state.gateGainNode.gain.setTargetAtTime(1.0, state.audioCtx.currentTime, 0.008);
+  }
+
   updatePttUI();
 
   if ('vibrate' in navigator) navigator.vibrate(40);
-  if (state.ws?.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ type: 'TALK_STATE', isTalking: true }));
-  }
+  broadcastTalkState(true);
 }
 
 function stopTalk() {
-  // Silenciar micrófono local (PTT liberado)
+  // Cerrar puerta de ruido inmediatamente
+  if (state.gateGainNode && state.audioCtx) {
+    state.gateGainNode.gain.setTargetAtTime(0.0, state.audioCtx.currentTime, 0.03);
+  }
+
+  // Silenciar micrófono tras pequeña rampa de 40ms para evitar clicks
   if (state.localStream) {
-    state.localStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    setTimeout(() => {
+      if (!state.isTransmitting && state.localStream) {
+        state.localStream.getAudioTracks().forEach((t) => (t.enabled = false));
+      }
+    }, 40);
   }
 
   state.isTransmitting = false;
   state.isLocked = false;
+  state.vadTalking = false;
   updatePttUI();
 
+  broadcastTalkState(false);
+}
+
+function broadcastTalkState(isTalking) {
   if (state.ws?.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ type: 'TALK_STATE', isTalking: false }));
+    state.ws.send(JSON.stringify({ type: 'TALK_STATE', isTalking }));
   }
 }
 
@@ -573,6 +846,11 @@ document.getElementById('btnSaveSettings').addEventListener('click', () => {
   state.room = document.getElementById('inputRoom').value.trim().toUpperCase() || 'RUTA-77';
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
+
+  const selectedDsp = document.getElementById('selectNoiseSuppression')?.value;
+  if (selectedDsp) {
+    applyDspProfile(selectedDsp);
+  }
 
   elRoom.textContent = state.room;
   elNick.textContent = state.nick;

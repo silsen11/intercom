@@ -275,6 +275,26 @@ body {
   border-color: #fcd34d;
 }
 
+.dsp-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 8px;
+  letter-spacing: 0.3px;
+}
+
+.dsp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  flex-shrink: 0;
+}
+
 /* PEERS SECTION */
 .peers-section {
   flex: 1;
@@ -398,6 +418,24 @@ body {
   padding: 10px 12px;
   color: #f8fafc;
   font-size: 14px;
+}
+
+select.input-field {
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 4px;
+  margin-bottom: 6px;
+  line-height: 1.35;
 }
 
 .modal-actions {
@@ -591,6 +629,17 @@ body {
     border-radius: 14px;
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .dsp-indicator {
+    font-size: 8.5px;
+    margin-top: 1px;
+    gap: 4px;
+  }
+
+  .dsp-dot {
+    width: 5px;
+    height: 5px;
   }
 
   /* 5. COLUMNA DERECHA: Lista de Pilotos */
