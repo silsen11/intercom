@@ -148,6 +148,10 @@ function handleMessage(ws, msg, clientId) {
       handleTalkState(ws, msg);
       break;
 
+    case 'LOCATION':
+      handleLocation(ws, msg);
+      break;
+
     case 'PING':
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'PONG', ts: msg.ts, serverTime: Date.now() }));
@@ -265,6 +269,27 @@ function handleTalkState(ws, msg) {
         type: 'PEER_TALK_STATE',
         peerId: sender.id,
         isTalking: Boolean(msg.isTalking)
+      }));
+    }
+  });
+}
+
+function handleLocation(ws, msg) {
+  const sender = clients.get(ws);
+  if (!sender) return;
+
+  const room = rooms.get(sender.roomId);
+  if (!room) return;
+
+  // Broadcast coordinates and speed to peers in room
+  room.forEach((info, peerWs) => {
+    if (peerWs !== ws && peerWs.readyState === WebSocket.OPEN) {
+      peerWs.send(JSON.stringify({
+        type: 'PEER_LOCATION',
+        peerId: sender.id,
+        nick: sender.nick,
+        coords: msg.coords,
+        ts: Date.now()
       }));
     }
   });

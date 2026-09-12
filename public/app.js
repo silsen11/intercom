@@ -45,7 +45,22 @@ const state = {
   voxConsecutiveVoice: 0,
   voxHoldTimer: 0,
   ws: null,
-  myId: null
+  myId: null,
+  // Estado de Navegación GPS, Mapa y Rutas
+  currentView: 'intercom', // 'intercom', 'map', 'split'
+  leafletMap: null,
+  myMarker: null,
+  peerMarkers: new Map(), // peerId -> L.marker
+  currentLocation: null,  // { lat, lng, speed, heading }
+  mapUserInteracted: false,
+  routePolyline: null,
+  routeSteps: [],
+  currentStepIndex: 0,
+  voiceNavEnabled: true,
+  searchTimeout: null,
+  lastSpeechText: '',
+  lastSpokenDistance: -1,
+  lastLocationBroadcastTs: 0
 };
 
 // Perfiles de Consumo de Datos Móviles (Optimización de Ancho de Banda y Cabeceras UDP)
@@ -422,6 +437,7 @@ applyVoxProfile(state.voxMode);
 applyDataSaverProfile(state.dataSaverMode);
 startDataUsageMonitor();
 refreshAudioDevices();
+initTabs();
 
 // Setup Mic Stream & Web Audio DSP Engine
 // Setup Mic Stream (Direct Native WebRTC para máxima compatibilidad con Bluetooth SCO y Cascos)
@@ -627,6 +643,10 @@ async function handleSignaling(msg) {
 
     case 'PEER_TALK_STATE':
       setPeerTalking(msg.peerId, msg.isTalking);
+      break;
+
+    case 'PEER_LOCATION':
+      updatePeerLocationOnMap(msg);
       break;
 
     case 'PONG':
@@ -1164,6 +1184,46 @@ function updatePttUI() {
       elDspLabel.textContent = state.handsFreeMode === 'open' ? 'ML: Abierto' : 'VOX: En Reposo';
     }
   }
+
+  // Sincronizar botón flotante de PTT en el mapa
+  const elFloatBtn = document.getElementById('floatingPttBtn');
+  const elFloatLock = document.getElementById('floatingLockBtn');
+  const elFloatIcon = document.getElementById('floatMicIcon');
+  const elFloatText = document.getElementById('floatPttText');
+
+  if (elFloatBtn && elFloatLock && elFloatIcon && elFloatText) {
+    if (state.isManualPtt) {
+      elFloatBtn.className = 'floating-ptt-btn active';
+      elFloatIcon.textContent = '📢';
+      elFloatText.textContent = 'HABLANDO';
+      elFloatLock.className = 'floating-lock-btn';
+      elFloatLock.textContent = '🔒 Manos Libres';
+    } else if (state.isHandsFree) {
+      elFloatLock.className = 'floating-lock-btn active';
+      elFloatLock.textContent = '🔓 Liberar';
+      if (state.handsFreeMode === 'open') {
+        elFloatBtn.className = 'floating-ptt-btn locked active';
+        elFloatIcon.textContent = '📢';
+        elFloatText.textContent = 'ABIERTO';
+      } else {
+        if (state.isTransmitting) {
+          elFloatBtn.className = 'floating-ptt-btn active';
+          elFloatIcon.textContent = '📢';
+          elFloatText.textContent = 'VOX VOZ';
+        } else {
+          elFloatBtn.className = 'floating-ptt-btn locked';
+          elFloatIcon.textContent = '🎙️';
+          elFloatText.textContent = 'VOX ESPERA';
+        }
+      }
+    } else {
+      elFloatBtn.className = 'floating-ptt-btn';
+      elFloatIcon.textContent = '🎙️';
+      elFloatText.textContent = 'PTT';
+      elFloatLock.className = 'floating-lock-btn';
+      elFloatLock.textContent = '🔒 Manos Libres';
+    }
+  }
 }
 
 // PTT Touch & Pointer Events
@@ -1293,6 +1353,494 @@ if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener ===
   navigator.mediaDevices.addEventListener('devicechange', async () => {
     console.log('[Audio] Cambio en dispositivos de audio detectado (Bluetooth conectado/desconectado)');
     await refreshAudioDevices();
+  });
+}
+
+// ==========================================
+// GPS NAVIGATION, MAP & GROUP TRACKING ENGINE
+// ==========================================
+
+const MANEUVER_ICONS = {
+  'turn-right': '↱',
+  'turn-left': '↰',
+  'sharp-right': '⮡',
+  'sharp-left': '⮠',
+  'slight-right': '↗',
+  'slight-left': '↖',
+  'continue': '↑',
+  'straight': '↑',
+  'roundabout': '🔄',
+  'rotary': '🔄',
+  'uturn': '↩',
+  'arrive': '🏁',
+  'depart': '🏍️'
+};
+
+function initTabs() {
+  const tabIntercom = document.getElementById('tabIntercom');
+  const tabMap = document.getElementById('tabMap');
+  const tabSplit = document.getElementById('tabSplit');
+  const viewIntercom = document.getElementById('viewIntercom');
+  const viewMap = document.getElementById('viewMap');
+  const appContainer = document.querySelector('.app-container');
+
+  function setActiveTab(tabName) {
+    state.currentView = tabName;
+    tabIntercom?.classList.toggle('active', tabName === 'intercom');
+    tabMap?.classList.toggle('active', tabName === 'map');
+    tabSplit?.classList.toggle('active', tabName === 'split');
+
+    if (tabName === 'intercom') {
+      appContainer?.classList.remove('dashboard-mode', 'map-mode');
+      viewIntercom?.classList.remove('hidden');
+      viewMap?.classList.add('hidden');
+    } else if (tabName === 'map') {
+      appContainer?.classList.remove('dashboard-mode');
+      appContainer?.classList.add('map-mode');
+      viewIntercom?.classList.add('hidden');
+      viewMap?.classList.remove('hidden');
+      initLeafletMapIfNeeded();
+      setTimeout(() => state.leafletMap?.invalidateSize(), 200);
+    } else if (tabName === 'split') {
+      appContainer?.classList.remove('map-mode');
+      appContainer?.classList.add('dashboard-mode');
+      viewIntercom?.classList.remove('hidden');
+      viewMap?.classList.remove('hidden');
+      initLeafletMapIfNeeded();
+      setTimeout(() => state.leafletMap?.invalidateSize(), 200);
+    }
+  }
+
+  tabIntercom?.addEventListener('click', () => setActiveTab('intercom'));
+  tabMap?.addEventListener('click', () => setActiveTab('map'));
+  tabSplit?.addEventListener('click', () => setActiveTab('split'));
+}
+
+function initLeafletMapIfNeeded() {
+  if (state.leafletMap) return;
+  if (typeof L === 'undefined') {
+    console.warn('[Map] Leaflet JS no está cargado');
+    return;
+  }
+  const mapContainer = document.getElementById('mapContainer');
+  if (!mapContainer) return;
+
+  const defaultCoords = [10.4806, -66.9036];
+  const map = L.map('mapContainer', {
+    center: defaultCoords,
+    zoom: 15,
+    zoomControl: false
+  });
+
+  L.control.zoom({ position: 'topright' }).addTo(map);
+
+  // Azulejos OpenStreetMap de alta visibilidad para motociclistas
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    subdomains: ['a', 'b', 'c'],
+    maxZoom: 19
+  }).addTo(map);
+
+  state.leafletMap = map;
+
+  map.on('dragstart', () => {
+    state.mapUserInteracted = true;
+  });
+
+  // Marcador propio con icono de moto
+  const myIcon = L.divIcon({
+    className: 'bike-marker-custom',
+    html: `<div class="bike-marker-wrap"><span class="bike-marker-icon" id="myBikeIcon">🏍️</span><span class="bike-marker-label">${state.nick} (Tú)</span></div>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20]
+  });
+
+  state.myMarker = L.marker(defaultCoords, { icon: myIcon }).addTo(map);
+
+  initGpsTracking();
+  initMapControls();
+}
+
+function initGpsTracking() {
+  if (!('geolocation' in navigator)) return;
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const speedKmH = pos.coords.speed !== null && pos.coords.speed >= 0 ? Math.round(pos.coords.speed * 3.6) : 0;
+      const heading = pos.coords.heading !== null && !isNaN(pos.coords.heading) ? Math.round(pos.coords.heading) : 0;
+
+      state.currentLocation = { lat, lng, speed: speedKmH, heading };
+
+      // Actualizar velocímetro digital HUD
+      const elHudSpeed = document.getElementById('hudSpeed');
+      const elHudHeading = document.getElementById('hudHeading');
+      if (elHudSpeed) elHudSpeed.textContent = speedKmH;
+      if (elHudHeading) {
+        const directions = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+        const dirIndex = Math.round(heading / 45) % 8;
+        elHudHeading.textContent = `🧭 ${directions[dirIndex] || 'N'}`;
+      }
+
+      // Actualizar marcador propio en el mapa
+      if (state.myMarker) {
+        state.myMarker.setLatLng([lat, lng]);
+        const bikeIcon = document.getElementById('myBikeIcon');
+        if (bikeIcon && heading) {
+          bikeIcon.style.transform = `rotate(${heading}deg)`;
+        }
+      }
+
+      // Si el mapa aún no se movió manualmente, centrar en la moto
+      if (!state.mapUserInteracted) {
+        state.leafletMap?.setView([lat, lng], state.leafletMap.getZoom() || 16);
+      }
+
+      // Comprobar progreso de navegación giro a giro
+      updateNavigationProgress(lat, lng);
+
+      // Transmitir posición a los compañeros cada 3 segundos
+      const now = Date.now();
+      if (now - state.lastLocationBroadcastTs > 3000) {
+        state.lastLocationBroadcastTs = now;
+        broadcastLocation(lat, lng, speedKmH, heading);
+      }
+    },
+    (err) => {
+      console.warn('[GPS] Error de geolocalización:', err.message);
+    },
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+  );
+}
+
+function broadcastLocation(lat, lng, speed, heading) {
+  if (state.ws?.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({
+      type: 'LOCATION',
+      coords: { lat, lng, speed, heading }
+    }));
+  }
+}
+
+function updatePeerLocationOnMap(msg) {
+  if (!state.leafletMap) return;
+  const { peerId, nick, coords } = msg;
+  if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') return;
+
+  let marker = state.peerMarkers.get(peerId);
+  if (!marker) {
+    const peerIcon = L.divIcon({
+      className: 'bike-marker-custom',
+      html: `<div class="bike-marker-wrap"><span class="bike-marker-icon">🏍️</span><span class="bike-marker-label" id="label_${peerId}">${nick} (${coords.speed || 0} km/h)</span></div>`,
+      iconSize: [40, 40],
+      iconAnchor: [20, 20]
+    });
+    marker = L.marker([coords.lat, coords.lng], { icon: peerIcon }).addTo(state.leafletMap);
+    state.peerMarkers.set(peerId, marker);
+  } else {
+    marker.setLatLng([coords.lat, coords.lng]);
+    const labelEl = document.getElementById(`label_${peerId}`);
+    if (labelEl) labelEl.textContent = `${nick} (${coords.speed || 0} km/h)`;
+  }
+}
+
+function speakGuidance(text) {
+  if (!state.voiceNavEnabled || !window.speechSynthesis) return;
+  if (state.lastSpeechText === text) return;
+  state.lastSpeechText = text;
+
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'es-ES';
+    utterance.rate = 1.05;
+    window.speechSynthesis.speak(utterance);
+  } catch (e) {}
+}
+
+function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371e3;
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+function updateNavigationProgress(lat, lng) {
+  if (!state.routeSteps || state.routeSteps.length === 0) return;
+  if (state.currentStepIndex >= state.routeSteps.length) {
+    // Llegada al destino
+    const elDist = document.getElementById('navDistance');
+    const elInst = document.getElementById('navInstruction');
+    if (elDist) elDist.textContent = '🏁 ¡Has llegado!';
+    if (elInst) elInst.textContent = 'Destino alcanzado';
+    speakGuidance('Has llegado a tu destino.');
+    setTimeout(() => {
+      cancelCurrentRoute();
+    }, 6000);
+    return;
+  }
+
+  const currentStep = state.routeSteps[state.currentStepIndex];
+  const stepCoord = currentStep.maneuver.location; // [lng, lat]
+  const dist = calculateDistanceMeters(lat, lng, stepCoord[1], stepCoord[0]);
+
+  // Manejo de giro completado (< 35 metros del punto)
+  if (dist < 35) {
+    state.currentStepIndex++;
+    if (state.currentStepIndex < state.routeSteps.length) {
+      const nextStep = state.routeSteps[state.currentStepIndex];
+      speakGuidance(nextStep.instruction || 'Continúa por la ruta');
+    }
+    return;
+  }
+
+  // Actualizar UI del banner
+  const distLabel = dist > 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`;
+  const elDist = document.getElementById('navDistance');
+  const elInst = document.getElementById('navInstruction');
+  const elIcon = document.getElementById('navManeuverIcon');
+
+  if (elDist) elDist.textContent = `En ${distLabel}`;
+  if (elInst) elInst.textContent = currentStep.instruction || currentStep.name || 'Continúa por la ruta';
+
+  const type = currentStep.maneuver.type || 'turn';
+  const mod = currentStep.maneuver.modifier || '';
+  const iconKey = mod ? `${type}-${mod}` : type;
+  if (elIcon) elIcon.textContent = MANEUVER_ICONS[iconKey] || MANEUVER_ICONS[mod] || '↱';
+
+  // Dictar por voz anticipada (a ~250m)
+  if (dist <= 260 && dist >= 180 && state.lastSpokenDistance !== 250) {
+    state.lastSpokenDistance = 250;
+    speakGuidance(`En doscientos metros, ${currentStep.instruction}`);
+  }
+}
+
+async function searchDestinations(query) {
+  const suggestionsBox = document.getElementById('searchSuggestions');
+  if (!suggestionsBox) return;
+
+  if (!query || query.trim().length < 3) {
+    suggestionsBox.classList.add('hidden');
+    return;
+  }
+
+  try {
+    let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`;
+    if (state.currentLocation) {
+      const b = 0.5;
+      url += `&viewbox=${state.currentLocation.lng - b},${state.currentLocation.lat + b},${state.currentLocation.lng + b},${state.currentLocation.lat - b}`;
+    }
+
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!data || data.length === 0) {
+      suggestionsBox.innerHTML = '<div class="suggestion-item">No se encontraron lugares</div>';
+      suggestionsBox.classList.remove('hidden');
+      return;
+    }
+
+    suggestionsBox.innerHTML = data.map((item) => `
+      <div class="suggestion-item" data-lat="${item.lat}" data-lon="${item.lon}">
+        <strong>📍 ${item.display_name.split(',')[0]}</strong>
+        <div style="font-size:10px; color:#94a3b8;">${item.display_name}</div>
+      </div>
+    `).join('');
+
+    suggestionsBox.classList.remove('hidden');
+
+    suggestionsBox.querySelectorAll('.suggestion-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const lat = parseFloat(el.getAttribute('data-lat'));
+        const lon = parseFloat(el.getAttribute('data-lon'));
+        suggestionsBox.classList.add('hidden');
+        const searchInput = document.getElementById('inputMapSearch');
+        if (searchInput) searchInput.value = el.querySelector('strong').textContent.replace('📍 ', '');
+        calculateAndStartRoute(lat, lon);
+      });
+    });
+  } catch (e) {
+    console.warn('[Search] Error en búsqueda de destino:', e);
+  }
+}
+
+async function calculateAndStartRoute(destLat, destLng) {
+  let startLat, startLng;
+  if (state.currentLocation) {
+    startLat = state.currentLocation.lat;
+    startLng = state.currentLocation.lng;
+  } else {
+    // Si aún no hay GPS satelital, usar centro del mapa
+    const center = state.leafletMap ? state.leafletMap.getCenter() : { lat: 10.4806, lng: -66.9036 };
+    startLat = center.lat;
+    startLng = center.lng;
+  }
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (!data.routes || data.routes.length === 0) {
+      alert('No se pudo encontrar una ruta en carretera hacia ese destino.');
+      return;
+    }
+
+    const route = data.routes[0];
+
+    // Limpiar ruta anterior
+    if (state.routePolyline && state.leafletMap) {
+      state.leafletMap.removeLayer(state.routePolyline);
+    }
+
+    // Dibujar polilínea en mapa
+    state.routePolyline = L.geoJSON(route.geometry, {
+      style: { color: '#38bdf8', weight: 6, opacity: 0.85 }
+    }).addTo(state.leafletMap);
+
+    state.leafletMap.fitBounds(state.routePolyline.getBounds(), { padding: [40, 40] });
+
+    // Preparar pasos giro a giro
+    state.routeSteps = [];
+    route.legs.forEach((leg) => {
+      leg.steps.forEach((step) => {
+        let instruction = step.maneuver.instruction || '';
+        if (!instruction) {
+          const type = step.maneuver.type;
+          const mod = step.maneuver.modifier ? ` a la ${step.maneuver.modifier.replace('left', 'izquierda').replace('right', 'derecha')}` : '';
+          const street = step.name ? ` por ${step.name}` : '';
+          instruction = `${type === 'turn' ? 'Gira' : 'Continúa'}${mod}${street}`;
+        }
+        state.routeSteps.push({
+          ...step,
+          instruction
+        });
+      });
+    });
+
+    state.currentStepIndex = 0;
+    state.lastSpokenDistance = -1;
+
+    // Mostrar banner de navegación
+    const navBanner = document.getElementById('navGuidanceBanner');
+    if (navBanner) navBanner.classList.remove('hidden');
+
+    const km = (route.distance / 1000).toFixed(1);
+    const minutes = Math.round(route.duration / 60);
+
+    const elEta = document.getElementById('navEta');
+    const elRem = document.getElementById('navRemDist');
+    if (elEta) elEta.textContent = `${minutes} min`;
+    if (elRem) elRem.textContent = `${km} km`;
+
+    // Dictar por voz al casco
+    speakGuidance(`Ruta calculada. Destino a ${km} kilómetros, tiempo estimado ${minutes} minutos. Conduce con cuidado.`);
+  } catch (err) {
+    console.error('[Route] Error calculando ruta:', err);
+    alert('Error al calcular la ruta. Verifica tu conexión de datos.');
+  }
+}
+
+function cancelCurrentRoute() {
+  if (state.routePolyline && state.leafletMap) {
+    state.leafletMap.removeLayer(state.routePolyline);
+    state.routePolyline = null;
+  }
+  state.routeSteps = [];
+  state.currentStepIndex = 0;
+  const navBanner = document.getElementById('navGuidanceBanner');
+  if (navBanner) navBanner.classList.add('hidden');
+  window.speechSynthesis?.cancel();
+}
+
+function initMapControls() {
+  const searchInput = document.getElementById('inputMapSearch');
+  const btnClear = document.getElementById('btnClearSearch');
+  const btnGo = document.getElementById('btnSearchDest');
+  const btnCenter = document.getElementById('btnCenterGps');
+  const btnVoice = document.getElementById('btnToggleVoiceNav');
+  const btnCancel = document.getElementById('btnCancelRoute');
+
+  searchInput?.addEventListener('input', (e) => {
+    const val = e.target.value;
+    if (btnClear) btnClear.classList.toggle('hidden', !val);
+    clearTimeout(state.searchTimeout);
+    state.searchTimeout = setTimeout(() => searchDestinations(val), 400);
+  });
+
+  btnClear?.addEventListener('click', () => {
+    if (searchInput) searchInput.value = '';
+    btnClear.classList.add('hidden');
+    document.getElementById('searchSuggestions')?.classList.add('hidden');
+  });
+
+  btnGo?.addEventListener('click', () => {
+    if (searchInput?.value) searchDestinations(searchInput.value);
+  });
+
+  btnCenter?.addEventListener('click', () => {
+    state.mapUserInteracted = false;
+    if (state.currentLocation && state.leafletMap) {
+      state.leafletMap.setView([state.currentLocation.lat, state.currentLocation.lng], 16);
+    }
+  });
+
+  btnVoice?.addEventListener('click', () => {
+    state.voiceNavEnabled = !state.voiceNavEnabled;
+    btnVoice.classList.toggle('active', state.voiceNavEnabled);
+    const icon = document.getElementById('voiceNavIcon');
+    if (icon) icon.textContent = state.voiceNavEnabled ? '🔊' : '🔇';
+    if (!state.voiceNavEnabled) window.speechSynthesis?.cancel();
+  });
+
+  btnCancel?.addEventListener('click', cancelCurrentRoute);
+
+  // Quick Chips
+  document.querySelectorAll('.chip-btn[data-search]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const term = btn.getAttribute('data-search');
+      if (searchInput) searchInput.value = term;
+      searchDestinations(term);
+    });
+  });
+
+  // Floating PTT Controls
+  const floatPtt = document.getElementById('floatingPttBtn');
+  const floatLock = document.getElementById('floatingLockBtn');
+
+  floatPtt?.addEventListener('pointerdown', async (e) => {
+    e.preventDefault();
+    await getLocalStream();
+    state.isManualPtt = true;
+    syncTransmissionState();
+  });
+
+  const stopFloatPtt = () => {
+    if (state.isManualPtt) {
+      state.isManualPtt = false;
+      syncTransmissionState();
+    }
+  };
+
+  floatPtt?.addEventListener('pointerup', stopFloatPtt);
+  floatPtt?.addEventListener('pointercancel', stopFloatPtt);
+  floatPtt?.addEventListener('pointerleave', stopFloatPtt);
+
+  floatLock?.addEventListener('click', async () => {
+    await getLocalStream();
+    state.isHandsFree = !state.isHandsFree;
+    if (!state.isHandsFree) {
+      state.isVoiceActive = false;
+      state.isFilteringNoise = false;
+    }
+    syncTransmissionState();
   });
 }
 
