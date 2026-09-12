@@ -11,7 +11,6 @@
   <meta name="description" content="Intercomunicador PTT P2P para motociclistas con WebRTC sobre 4G/5G">
   <title>RiderCom Mesh Pro</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
@@ -33,13 +32,6 @@
       </div>
       <button id="btnSettings" class="icon-btn" title="Configurar">⚙️</button>
     </header>
-
-    <!-- MAIN NAVIGATION TABS -->
-    <nav class="nav-tabs" id="navTabs">
-      <button id="tabIntercom" class="nav-tab-btn active" type="button">🎙️ Intercom</button>
-      <button id="tabMap" class="nav-tab-btn" type="button">🗺️ Mapa GPS</button>
-      <button id="tabSplit" class="nav-tab-btn" type="button">⚡ Dashboard</button>
-    </nav>
 
     <!-- PWA INSTALL BANNER -->
     <div id="pwaInstallBanner" class="pwa-install-banner hidden">
@@ -82,122 +74,47 @@
       </div>
     </div>
 
-    <!-- VIEWS WRAPPER -->
-    <div class="views-wrapper" id="viewsWrapper">
-      <!-- VIEW INTERCOM -->
-      <div id="viewIntercom" class="view-panel active">
-      <!-- MAIN PTT SECTION -->
-      <main class="ptt-section">
-        <div class="ptt-header">
-          <h2 id="pttTitle" class="ptt-title">⚪ EN ESPERA</h2>
-          <p id="pttSubtitle" class="ptt-subtitle">Mantén presionado para hablar (doble toque = manos libres)</p>
-        </div>
-
-        <button id="pttButton" class="ptt-button" type="button">
-          <div class="mic-circle">
-            <span id="micIcon" class="mic-icon">🎙️</span>
-          </div>
-          <span id="pttLabel" class="ptt-label">PTT HABLAR</span>
-        </button>
-
-        <button id="btnToggleLock" class="lock-btn" type="button">
-          🔒 Fijar Manos Libres
-        </button>
-
-        <div class="ptt-footer-badges">
-          <div id="btnDspBadge" class="dsp-indicator" title="Toca para ajustar el filtro VOX / DSP">
-            <span id="dspDot" class="dsp-dot"></span>
-            <span id="dspLabel">VOX: Espera</span>
-          </div>
-
-          <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
-            <span id="audioDeviceIcon">🎧</span>
-            <span id="audioDeviceLabel">Audio: Predeterminado</span>
-          </div>
-
-          <div id="btnVolumeBadge" class="volume-indicator-badge" title="Toca para alternar volumen del casco (100% / 150% / 200% / 300%)">
-            <span id="volumeBadgeIcon">🔊</span>
-            <span id="volumeBadgeLabel">Vol: 150%</span>
-          </div>
-        </div>
-      </main>
-
-      <!-- PEERS LIST -->
-      <section class="peers-section">
-        <div class="peers-header">
-          <span class="peers-title">🏍️ PILOTOS EN RUTA</span>
-          <span id="peersTotal" class="peers-counter">1 conectado</span>
-        </div>
-        <div id="peersList" class="peers-list">
-          <!-- Peers se renderizan dinámicamente -->
-        </div>
-      </section>
-    </div>
-
-    <!-- VIEW MAP GPS -->
-    <div id="viewMap" class="view-panel hidden">
-      <!-- PANEL DE GUIADO GIRO A GIRO -->
-      <div id="navGuidanceBanner" class="nav-guidance-banner hidden">
-        <div class="nav-maneuver-icon" id="navManeuverIcon">↱</div>
-        <div class="nav-info">
-          <div class="nav-distance" id="navDistance">En 400 m</div>
-          <div class="nav-instruction" id="navInstruction">Iniciando navegación...</div>
-        </div>
-        <div class="nav-metrics">
-          <div class="nav-eta" id="navEta">--:--</div>
-          <div class="nav-rem-dist" id="navRemDist">-- km</div>
-        </div>
-        <button id="btnCancelRoute" class="btn-cancel-route" type="button" title="Cancelar ruta">✕</button>
+    <!-- MAIN PTT SECTION -->
+    <main class="ptt-section">
+      <div class="ptt-header">
+        <h2 id="pttTitle" class="ptt-title">⚪ EN ESPERA</h2>
+        <p id="pttSubtitle" class="ptt-subtitle">Mantén presionado para hablar (doble toque = manos libres)</p>
       </div>
 
-      <!-- BUSCADOR DE DESTINO -->
-      <div class="map-search-bar">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="inputMapSearch" placeholder="Buscar destino, gasolinera o taller..." autocomplete="off">
-          <button id="btnClearSearch" class="btn-clear-search hidden" type="button">✕</button>
+      <button id="pttButton" class="ptt-button" type="button">
+        <div class="mic-circle">
+          <span id="micIcon" class="mic-icon">🎙️</span>
         </div>
-        <button id="btnSearchDest" class="btn-search-go" type="button">IR</button>
-        <div id="searchSuggestions" class="search-suggestions hidden"></div>
-      </div>
+        <span id="pttLabel" class="ptt-label">PTT HABLAR</span>
+      </button>
 
-      <!-- CHIPS DE ACCESO RÁPIDO PARA MOTORISTAS -->
-      <div class="map-quick-chips">
-        <button class="chip-btn" data-search="gasolinera" type="button">⛽ Gasolinera</button>
-        <button class="chip-btn" data-search="taller mecanico" type="button">🛠️ Taller</button>
-        <button class="chip-btn" data-search="restaurante" type="button">☕ Parada</button>
-        <button id="btnCenterGps" class="chip-btn chip-action" type="button">🎯 Mi GPS</button>
-      </div>
+      <button id="btnToggleLock" class="lock-btn" type="button">
+        🔒 Fijar Manos Libres
+      </button>
 
-      <!-- CONTENEDOR DEL MAPA Y CONTROLES HUD -->
-      <div class="map-wrapper">
-        <div id="mapContainer" class="map-container"></div>
-
-        <!-- HUD VELOCÍMETRO DIGITAL -->
-        <div class="speed-hud">
-          <div class="speed-value" id="hudSpeed">0</div>
-          <div class="speed-unit">KM/H</div>
-          <div class="speed-sub" id="hudHeading">🧭 N</div>
+      <div class="ptt-footer-badges">
+        <div id="btnDspBadge" class="dsp-indicator" title="Toca para ajustar el filtro VOX / DSP">
+          <span id="dspDot" class="dsp-dot"></span>
+          <span id="dspLabel">VOX: Espera</span>
         </div>
 
-        <!-- BOTÓN VOZ GPS EN CASCO -->
-        <button id="btnToggleVoiceNav" class="voice-nav-toggle active" type="button" title="Activar/Desactivar voz en el casco">
-          <span id="voiceNavIcon">🔊</span> Voz Casco
-        </button>
-
-        <!-- MINI-PTT FLOTANTE SOBRE EL MAPA -->
-        <div id="floatingPttContainer" class="floating-ptt-container">
-          <button id="floatingPttBtn" class="floating-ptt-btn" type="button">
-            <span id="floatMicIcon">🎙️</span>
-            <span id="floatPttText">PTT</span>
-          </button>
-          <button id="floatingLockBtn" class="floating-lock-btn" type="button">
-            🔒 Manos Libres
-          </button>
+        <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
+          <span id="audioDeviceIcon">🎧</span>
+          <span id="audioDeviceLabel">Audio: Predeterminado</span>
         </div>
       </div>
-    </div>
-  </div>
+    </main>
+
+    <!-- PEERS LIST -->
+    <section class="peers-section">
+      <div class="peers-header">
+        <span class="peers-title">🏍️ PILOTOS EN RUTA</span>
+        <span id="peersTotal" class="peers-counter">1 conectado</span>
+      </div>
+      <div id="peersList" class="peers-list">
+        <!-- Peers se renderizan dinámicamente -->
+      </div>
+    </section>
 
     <!-- SETTINGS MODAL -->
     <div id="settingsModal" class="modal hidden">
@@ -224,28 +141,6 @@
           <select id="selectAudioOutput" class="input-field">
             <option value="">Predeterminado del Sistema</option>
           </select>
-        </div>
-
-        <!-- VOLUMEN DEL INTERCOMUNICADOR Y BOOST CASCO -->
-        <div class="volume-settings-group">
-          <div class="volume-header-row">
-            <label class="input-label" for="sliderVolume" style="margin-bottom:0;">
-              🔊 VOLUMEN INTERCOM / CASCO:
-            </label>
-            <span id="volumeValueLabel" class="volume-badge">150% (Boost Moto)</span>
-          </div>
-          <div class="volume-slider-wrap">
-            <input type="range" id="sliderVolume" min="20" max="300" step="5" value="150" class="volume-slider">
-          </div>
-          <div class="volume-presets">
-            <button type="button" class="btn-vol-preset" data-vol="100">100% Normal</button>
-            <button type="button" class="btn-vol-preset active" data-vol="150">150% Moto</button>
-            <button type="button" class="btn-vol-preset" data-vol="200">200% Casco</button>
-            <button type="button" class="btn-vol-preset" data-vol="300">300% Turbo</button>
-          </div>
-          <p class="settings-hint">
-            🚀 <strong>Boost Digital para Cascos</strong>: Amplifica el volumen recibido hasta un 300% con compresor de rango dinámico anti-distorsión, para escuchar claramente a tus compañeros incluso a alta velocidad con ruido de viento y escape.
-          </p>
         </div>
 
         <label class="input-label" for="selectHandsFreeMode">MODO AL FIJAR MANOS LIBRES:</label>
@@ -301,7 +196,6 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
