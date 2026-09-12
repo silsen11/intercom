@@ -125,22 +125,33 @@
           </select>
         </div>
 
-        <label class="input-label" for="selectVoxMode">ACTIVACIÓN INTELIGENTE POR VOZ (VOX MOTO):</label>
-        <select id="selectVoxMode" class="input-field">
-          <option value="highway">🏍️ Moto / Autopista (Filtro Anti-Viento Agresivo)</option>
-          <option value="standard" selected>⚖️ Carretera / Equilibrado (Recomendado)</option>
-          <option value="sensitive">🗣️ Ciudad / Alta Sensibilidad (Voz Suave)</option>
+        <label class="input-label" for="selectHandsFreeMode">MODO AL FIJAR MANOS LIBRES:</label>
+        <select id="selectHandsFreeMode" class="input-field">
+          <option value="open" selected>🎙️ Micrófono Abierto Continuo (Igual a PTT - Máxima Claridad)</option>
+          <option value="vox">🗣️ Activación Inteligente VOX (Filtra Viento y Ruido)</option>
         </select>
-        <div class="vox-meter-container">
-          <div class="vox-meter-labels">
-            <span>Calibración de Voz vs Viento:</span>
-            <span id="voxMeterStatus" class="vox-meter-status">Esperando audio...</span>
-          </div>
-          <div class="vox-meter-bar-bg">
-            <div id="voxMeterBar" class="vox-meter-bar"></div>
+        <p class="settings-hint">
+          <strong>Micrófono Abierto</strong>: Habla continuo sin interrupciones exactamente igual que al presionar PTT.<br>
+          <strong>VOX Auto</strong>: Detecta formantes vocales y se silencia cuando no hablas.
+        </p>
+
+        <div id="voxSettingsGroup">
+          <label class="input-label" for="selectVoxMode">SENSIBILIDAD VOX AUTO:</label>
+          <select id="selectVoxMode" class="input-field">
+            <option value="highway">🏍️ Moto / Autopista (Filtro Anti-Viento Agresivo)</option>
+            <option value="standard" selected>⚖️ Carretera / Equilibrado (Recomendado)</option>
+            <option value="sensitive">🗣️ Ciudad / Alta Sensibilidad (Voz Suave)</option>
+          </select>
+          <div class="vox-meter-container">
+            <div class="vox-meter-labels">
+              <span>Calibración de Voz vs Viento:</span>
+              <span id="voxMeterStatus" class="vox-meter-status">Esperando audio...</span>
+            </div>
+            <div class="vox-meter-bar-bg">
+              <div id="voxMeterBar" class="vox-meter-bar"></div>
+            </div>
           </div>
         </div>
-        <p class="settings-hint">Analiza formantes vocales humanos para transmitir solo tu voz y rechazar viento y escape en Manos Libres.</p>
 
         <label class="input-label" for="inputServer">SERVIDOR DE SEÑALIZACIÓN:</label>
         <input type="text" id="inputServer" class="input-field" value="">

@@ -12,6 +12,7 @@ const state = {
   isManualPtt: false,        // PTT manual presionado por el piloto
   isVoiceActive: false,      // Voz humana activa detectada por formantes
   isFilteringNoise: false,   // Ruido de viento o motor detectado y silenciado
+  handsFreeMode: localStorage.getItem('ridercom_handsfree_mode') || 'open', // 'open' (Abierto Continuo como PTT) o 'vox' (VOX Auto)
   peers: new Map(), // peerId -> { id, nick, pc, isTalking, pendingCandidates }
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -29,6 +30,7 @@ const state = {
     }
   ],
   localStream: null,         // MediaStream nativo directo hacia WebRTC (Bluetooth SCO)
+  analyserTrack: null,       // Track clonado independiente para que el analizador nunca se silencie
   audioCtx: null,            // AudioContext en memoria exclusivamente para análisis acústico
   voxSourceNode: null,
   analyserNode: null,
@@ -46,29 +48,42 @@ const state = {
 const VOX_PROFILES = {
   highway: {
     label: 'Moto / Autopista (Anti-Viento)',
-    minDb: -40,           // Volumen mínimo audible para evaluar
-    minVoiceRatio: 0.38,  // Proporción de formantes vocales vs ruido total
-    minCrest: 2.1,        // Picos de resonancia vocal en 300-3200Hz
-    maxRumbleRatio: 0.62, // Rechazo si los bajos <280Hz dominan (viento/escape)
-    hangoverMs: 320       // Tiempo de resaca (ms) para no recortar finales de frases
+    minDb: -44,           // Volumen mínimo audible para evaluar
+    minVoiceRatio: 0.28,  // Proporción de formantes vocales vs ruido total
+    minCrest: 1.70,       // Picos de resonancia vocal en 300-3200Hz
+    maxRumbleRatio: 0.72, // Rechazo si los bajos <280Hz dominan (viento/escape)
+    hangoverMs: 380       // Tiempo de resaca (ms) para no recortar finales de frases
   },
   standard: {
     label: 'Carretera / Equilibrado',
-    minDb: -46,
-    minVoiceRatio: 0.28,
-    minCrest: 1.75,
-    maxRumbleRatio: 0.72,
-    hangoverMs: 380
+    minDb: -50,
+    minVoiceRatio: 0.20,
+    minCrest: 1.40,
+    maxRumbleRatio: 0.82,
+    hangoverMs: 440
   },
   sensitive: {
     label: 'Ciudad / Alta Sensibilidad',
-    minDb: -52,
-    minVoiceRatio: 0.20,
-    minCrest: 1.5,
-    maxRumbleRatio: 0.82,
-    hangoverMs: 440
+    minDb: -56,
+    minVoiceRatio: 0.14,
+    minCrest: 1.25,
+    maxRumbleRatio: 0.90,
+    hangoverMs: 520
   }
 };
+
+function applyHandsFreeMode(mode) {
+  if (mode !== 'open' && mode !== 'vox') mode = 'open';
+  state.handsFreeMode = mode;
+  localStorage.setItem('ridercom_handsfree_mode', mode);
+
+  const elSelect = document.getElementById('selectHandsFreeMode');
+  const elVoxGroup = document.getElementById('voxSettingsGroup');
+  if (elSelect) elSelect.value = mode;
+  if (elVoxGroup) elVoxGroup.style.display = mode === 'vox' ? 'block' : 'none';
+
+  syncTransmissionState();
+}
 
 function applyVoxProfile(mode) {
   if (!VOX_PROFILES[mode]) mode = 'standard';
@@ -82,7 +97,6 @@ function applyVoxProfile(mode) {
 }
 
 function applyDspProfile(mode) {
-  // Compatibilidad con perfil seleccionado
   if (VOX_PROFILES[mode]) {
     applyVoxProfile(mode);
   }
@@ -297,6 +311,7 @@ elNick.textContent = state.nick;
 document.getElementById('inputRoom').value = state.room;
 document.getElementById('inputNick').value = state.nick;
 document.getElementById('inputServer').value = state.serverUrl;
+applyHandsFreeMode(state.handsFreeMode);
 applyVoxProfile(state.voxMode);
 refreshAudioDevices();
 
@@ -761,7 +776,7 @@ function renderPeers() {
 // AUDIO ENGINE: VOX INTELIGENTE & WEBRTC P2P
 // ==========================================
 
-// Configuración del Analizador Acústico VOX (En memoria paralela, sin alterar stream nativo)
+// Configuración del Analizador Acústico VOX (En memoria paralela con pista clonada)
 function setupVoxAnalyser(stream) {
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -778,7 +793,22 @@ function setupVoxAnalyser(stream) {
       try { state.voxSourceNode.disconnect(); } catch (e) {}
     }
 
-    const source = state.audioCtx.createMediaStreamSource(stream);
+    const tracks = stream.getAudioTracks();
+    if (!tracks || tracks.length === 0) return;
+
+    // SOLUCIÓN CLAVE: Clonar la pista de audio exclusivamente para el analizador acústico.
+    // Al clonarla, analyserTrack.enabled permanece SIEMPRE en true en el AudioContext.
+    // Esto permite que el analizador siga escuchando el micrófono real para detectar cuándo hablas,
+    // incluso cuando la pista WebRTC principal esté temporalmente silenciada (track.enabled = false).
+    if (state.analyserTrack) {
+      try { state.analyserTrack.stop(); } catch (e) {}
+      state.analyserTrack = null;
+    }
+    state.analyserTrack = tracks[0].clone();
+    state.analyserTrack.enabled = true;
+
+    const analyserStream = new MediaStream([state.analyserTrack]);
+    const source = state.audioCtx.createMediaStreamSource(analyserStream);
     const analyser = state.audioCtx.createAnalyser();
     analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.2;
@@ -848,7 +878,7 @@ function startVoxLoop() {
 
     const prof = VOX_PROFILES[state.voxMode] || VOX_PROFILES.standard;
 
-    // Regla de decisión acústica
+    // Regla de decisión acústica afinada para Bluetooth SCO y móviles
     const isAudible = db > prof.minDb;
     const isFormantStructure = voiceRatio >= prof.minVoiceRatio && crestFactor >= prof.minCrest;
     const isRumbleDominant = rumbleRatio > prof.maxRumbleRatio && voiceRatio < (prof.minVoiceRatio * 1.15);
@@ -859,7 +889,7 @@ function startVoxLoop() {
     // Lógica temporal de activación (Ataque y Resaca / Hangover)
     if (isRawVoice) {
       state.voxConsecutiveVoice++;
-      if (state.voxConsecutiveVoice >= 2) {
+      if (state.voxConsecutiveVoice >= 1) { // Activación inmediata en 30ms
         state.isVoiceActive = true;
         state.voxHoldTimer = prof.hangoverMs;
       }
@@ -903,7 +933,7 @@ function updateVoxMeterUI(db, isVoice, isNoise) {
   } else {
     elBar.className = 'vox-meter-bar';
     elStatus.className = 'vox-meter-status';
-    elStatus.textContent = '⚪ Silencio ambiental';
+    elStatus.textContent = '⚪ Silencio';
   }
 }
 
@@ -914,7 +944,15 @@ function syncTransmissionState() {
   if (state.isManualPtt) {
     shouldTransmit = true;
   } else if (state.isHandsFree) {
-    shouldTransmit = state.isVoiceActive;
+    if (state.handsFreeMode === 'open') {
+      // MODO MICRÓFONO ABIERTO:
+      // Exactamente idéntico a presionar PTT: transmisión 100% continua, nativa y cristalina
+      shouldTransmit = true;
+    } else {
+      // MODO VOX AUTO:
+      // Activación inteligente solo al hablar
+      shouldTransmit = state.isVoiceActive;
+    }
   } else {
     shouldTransmit = false;
   }
@@ -953,41 +991,55 @@ function updatePttUI() {
     elPttLabel.textContent = 'HABLANDO';
     elMicIcon.textContent = '📢';
     if (elDspDot) elDspDot.style.backgroundColor = '#dc2626';
-    if (elDspLabel) elDspLabel.textContent = 'VOX: PTT Manual';
+    if (elDspLabel) elDspLabel.textContent = 'PTT: Manual';
   } else if (state.isHandsFree) {
     elLockBtn.className = 'lock-btn active';
-    elLockBtn.textContent = '🔓 Liberar Manos Libres';
+    elLockBtn.textContent = '🔓 Liberar Micrófono';
 
-    if (state.isTransmitting) {
-      elPttBtn.className = 'ptt-button active';
-      elPttTitle.textContent = '🟢 VOZ EN VIVO (MANOS LIBRES)';
+    if (state.handsFreeMode === 'open') {
+      // Modo Continuo (Igual a PTT Fijo)
+      elPttBtn.className = 'ptt-button locked active';
+      elPttTitle.textContent = '🎙️ MANOS LIBRES (ABIERTO)';
       elPttLabel.textContent = 'HABLANDO';
       elMicIcon.textContent = '📢';
       if (elDspDot) {
         elDspDot.style.backgroundColor = '#10b981';
         elDspDot.style.boxShadow = '0 0 10px rgba(16, 185, 129, 0.8)';
       }
-      if (elDspLabel) elDspLabel.textContent = 'VOX: 🟢 Voz Transmitiendo';
-    } else if (state.isFilteringNoise) {
-      elPttBtn.className = 'ptt-button locked';
-      elPttTitle.textContent = '🟡 FILTRANDO VIENTO / MOTOR';
-      elPttLabel.textContent = 'BLOQUEADO';
-      elMicIcon.textContent = '🛡️';
-      if (elDspDot) {
-        elDspDot.style.backgroundColor = '#f59e0b';
-        elDspDot.style.boxShadow = '0 0 8px rgba(245, 158, 11, 0.6)';
-      }
-      if (elDspLabel) elDspLabel.textContent = 'VOX: 🟡 Filtrando Viento';
+      if (elDspLabel) elDspLabel.textContent = 'Manos Libres: Continuo';
     } else {
-      elPttBtn.className = 'ptt-button locked';
-      elPttTitle.textContent = '⚪ MANOS LIBRES (ESPERANDO VOZ)';
-      elPttLabel.textContent = 'VOX AUTO';
-      elMicIcon.textContent = '🎙️';
-      if (elDspDot) {
-        elDspDot.style.backgroundColor = '#38bdf8';
-        elDspDot.style.boxShadow = '0 0 6px rgba(56, 189, 248, 0.5)';
+      // Modo VOX Inteligente
+      if (state.isTransmitting) {
+        elPttBtn.className = 'ptt-button active';
+        elPttTitle.textContent = '🟢 VOZ EN VIVO (VOX)';
+        elPttLabel.textContent = 'HABLANDO';
+        elMicIcon.textContent = '📢';
+        if (elDspDot) {
+          elDspDot.style.backgroundColor = '#10b981';
+          elDspDot.style.boxShadow = '0 0 10px rgba(16, 185, 129, 0.8)';
+        }
+        if (elDspLabel) elDspLabel.textContent = 'VOX: 🟢 Transmitiendo';
+      } else if (state.isFilteringNoise) {
+        elPttBtn.className = 'ptt-button locked';
+        elPttTitle.textContent = '🟡 FILTRANDO VIENTO / MOTOR';
+        elPttLabel.textContent = 'BLOQUEADO';
+        elMicIcon.textContent = '🛡️';
+        if (elDspDot) {
+          elDspDot.style.backgroundColor = '#f59e0b';
+          elDspDot.style.boxShadow = '0 0 8px rgba(245, 158, 11, 0.6)';
+        }
+        if (elDspLabel) elDspLabel.textContent = 'VOX: 🟡 Filtrando Viento';
+      } else {
+        elPttBtn.className = 'ptt-button locked';
+        elPttTitle.textContent = '⚪ MANOS LIBRES (VOX ESPERA)';
+        elPttLabel.textContent = 'VOX AUTO';
+        elMicIcon.textContent = '🎙️';
+        if (elDspDot) {
+          elDspDot.style.backgroundColor = '#38bdf8';
+          elDspDot.style.boxShadow = '0 0 6px rgba(56, 189, 248, 0.5)';
+        }
+        if (elDspLabel) elDspLabel.textContent = 'VOX: 🔵 En Espera';
       }
-      if (elDspLabel) elDspLabel.textContent = 'VOX: 🔵 En Espera';
     }
   } else {
     elLockBtn.className = 'lock-btn';
@@ -1000,7 +1052,9 @@ function updatePttUI() {
       elDspDot.style.backgroundColor = '#64748b';
       elDspDot.style.boxShadow = 'none';
     }
-    if (elDspLabel) elDspLabel.textContent = 'VOX: En Reposo';
+    if (elDspLabel) {
+      elDspLabel.textContent = state.handsFreeMode === 'open' ? 'ML: Abierto' : 'VOX: En Reposo';
+    }
   }
 }
 
@@ -1050,17 +1104,27 @@ elLockBtn.addEventListener('click', async () => {
 // Settings Modal
 document.getElementById('btnSettings').addEventListener('click', () => {
   elModal.classList.remove('hidden');
+  applyHandsFreeMode(state.handsFreeMode);
   refreshAudioDevices();
 });
 
 document.getElementById('btnDeviceBadge')?.addEventListener('click', () => {
   elModal.classList.remove('hidden');
+  applyHandsFreeMode(state.handsFreeMode);
   refreshAudioDevices();
 });
 
 document.getElementById('btnDspBadge')?.addEventListener('click', () => {
   elModal.classList.remove('hidden');
+  applyHandsFreeMode(state.handsFreeMode);
   refreshAudioDevices();
+});
+
+document.getElementById('selectHandsFreeMode')?.addEventListener('change', (e) => {
+  const elVoxGroup = document.getElementById('voxSettingsGroup');
+  if (elVoxGroup) {
+    elVoxGroup.style.display = e.target.value === 'vox' ? 'block' : 'none';
+  }
 });
 
 document.getElementById('btnCancelSettings').addEventListener('click', () => {
@@ -1075,6 +1139,11 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   state.room = document.getElementById('inputRoom').value.trim().toUpperCase() || 'RUTA-77';
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
+
+  const selectedHfMode = document.getElementById('selectHandsFreeMode')?.value;
+  if (selectedHfMode) {
+    applyHandsFreeMode(selectedHfMode);
+  }
 
   const selectedVox = document.getElementById('selectVoxMode')?.value;
   if (selectedVox) {
