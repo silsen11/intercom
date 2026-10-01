@@ -3,12 +3,14 @@
  * Soporte Offline, Inicio Autónomo e Instalación en Celular
  */
 
-const CACHE_NAME = 'ridercom-v1.1';
+const CACHE_NAME = 'ridercom-v2.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
   '/style.css',
+  '/leaflet/leaflet.css',
+  '/leaflet/leaflet.js',
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',

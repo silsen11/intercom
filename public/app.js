@@ -4,8 +4,8 @@
  */
 
 const state = {
-  room: 'RUTA-77',
-  nick: 'Piloto_' + Math.floor(1000 + Math.random() * 9000),
+  room: localStorage.getItem('ridercom_room') || 'RUTA-77',
+  nick: localStorage.getItem('ridercom_nick') || ('Piloto_' + Math.floor(1000 + Math.random() * 9000)),
   serverUrl: '',
   isTransmitting: false,
   isHandsFree: false,        // Modo Manos Libres ("Fijar Manos Libres")
@@ -387,9 +387,10 @@ async function switchAudioOutput(deviceId) {
   });
 }
 
-// Auto-detect server URL from current host
+// Auto-detect server URL from current host or persistent preference
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-state.serverUrl = `${protocol}//${window.location.host}`;
+const defaultHostUrl = window.location.host ? `${protocol}//${window.location.host}` : '';
+state.serverUrl = localStorage.getItem('ridercom_server_url') || defaultHostUrl;
 
 // DOM Elements
 const elRoom = document.getElementById('displayRoom');
@@ -1290,6 +1291,10 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   state.room = document.getElementById('inputRoom').value.trim().toUpperCase() || 'RUTA-77';
   state.nick = document.getElementById('inputNick').value.trim() || 'Piloto';
   state.serverUrl = document.getElementById('inputServer').value.trim() || state.serverUrl;
+
+  localStorage.setItem('ridercom_room', state.room);
+  localStorage.setItem('ridercom_nick', state.nick);
+  localStorage.setItem('ridercom_server_url', state.serverUrl);
 
   const selectedHfMode = document.getElementById('selectHandsFreeMode')?.value;
   if (selectedHfMode) {

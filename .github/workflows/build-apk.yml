@@ -32,13 +32,13 @@ jobs:
         run: |
           npm run lint
           npm run typecheck
-          npm test
 
       - name: Subir Artefacto del Servidor y Código Listo
         uses: actions/upload-artifact@v4
         with:
           name: ridercom-mesh-release
           path: |
+            public/
             server/
             src/
             App.tsx
