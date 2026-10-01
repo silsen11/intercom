@@ -6,12 +6,26 @@ const WebSocket = require('ws');
 // Importar servidor
 const { server, wss, rooms } = require('../server/signal-server');
 
-test('Servidor de Señalización - Endpoint /health', async (t) => {
-  const address = server.address();
-  const port = address ? address.port : 8765;
+let testPort = 8765;
+let serverStartedByTest = false;
 
+test.before(async () => {
+  if (!server.listening) {
+    await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        serverStartedByTest = true;
+        testPort = server.address().port;
+        resolve();
+      });
+    });
+  } else {
+    testPort = server.address().port || 8765;
+  }
+});
+
+test('Servidor de Señalización - Endpoint /health', async (t) => {
   await new Promise((resolve, reject) => {
-    http.get(`http://127.0.0.1:${port}/health`, (res) => {
+    http.get(`http://127.0.0.1:${testPort}/health`, (res) => {
       assert.strictEqual(res.statusCode, 200);
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -26,10 +40,7 @@ test('Servidor de Señalización - Endpoint /health', async (t) => {
 });
 
 test('Servidor de Señalización - Flujo WebSocket JOIN y PING/PONG', async (t) => {
-  const address = server.address();
-  const port = address ? address.port : 8765;
-
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
 
   await new Promise((resolve, reject) => {
     ws.on('open', () => {
@@ -75,6 +86,9 @@ test('Servidor de Señalización - Flujo WebSocket JOIN y PING/PONG', async (t) 
 });
 
 test.after(() => {
-  server.close();
-  wss.close();
+  if (serverStartedByTest) {
+    server.close();
+    wss.close();
+  }
 });
+

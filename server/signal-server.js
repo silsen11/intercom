@@ -148,6 +148,10 @@ function handleMessage(ws, msg, clientId) {
       handleTalkState(ws, msg);
       break;
 
+    case 'LOCATION':
+      handleLocation(ws, msg);
+      break;
+
     case 'PING':
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'PONG', ts: msg.ts, serverTime: Date.now() }));
@@ -199,7 +203,8 @@ function handleJoin(ws, msg, clientId) {
       existingPeers.push({
         id: info.id,
         nick: info.nick,
-        isTalking: info.isTalking
+        isTalking: info.isTalking,
+        coords: info.coords || null
       });
 
       // Notify existing peer about the new rider
@@ -270,6 +275,32 @@ function handleTalkState(ws, msg) {
   });
 }
 
+function handleLocation(ws, msg) {
+  const sender = clients.get(ws);
+  if (!sender) return;
+
+  const room = rooms.get(sender.roomId);
+  if (!room) return;
+
+  const clientInfo = room.get(ws);
+  if (clientInfo && msg.coords) {
+    clientInfo.coords = msg.coords;
+  }
+
+  // Broadcast coordinates to all other peers in the room
+  room.forEach((info, peerWs) => {
+    if (peerWs !== ws && peerWs.readyState === WebSocket.OPEN) {
+      peerWs.send(JSON.stringify({
+        type: 'PEER_LOCATION',
+        peerId: sender.id,
+        nick: sender.nick,
+        coords: msg.coords,
+        ts: Date.now()
+      }));
+    }
+  });
+}
+
 
 function handleDisconnect(ws) {
   const client = clients.get(ws);
@@ -314,15 +345,17 @@ if (heartbeatInterval.unref) {
   heartbeatInterval.unref();
 }
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('============================================================');
-  console.log(' 🏍️  RIDERCOM MESH PRO - SERVIDOR DE SEÑALIZACIÓN INICIADO');
-  console.log('============================================================');
-  console.log(` ► Puerto: ${PORT}`);
-  console.log(` ► Estado HTTP: http://localhost:${PORT}/health`);
-  console.log(` ► WebRTC P2P con STUN/TURN integrado`);
-  console.log(` ► Modo Termux / Nube (Render, Railway, Fly.io)`);
-  console.log('============================================================');
-});
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('============================================================');
+    console.log(' 🏍️  RIDERCOM MESH PRO - SERVIDOR DE SEÑALIZACIÓN INICIADO');
+    console.log('============================================================');
+    console.log(` ► Puerto: ${PORT}`);
+    console.log(` ► Estado HTTP: http://localhost:${PORT}/health`);
+    console.log(` ► WebRTC P2P con STUN/TURN integrado`);
+    console.log(` ► Modo Termux / Nube (Render, Railway, Fly.io)`);
+    console.log('============================================================');
+  });
+}
 
 module.exports = { server, wss, rooms, clients };

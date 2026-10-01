@@ -11,6 +11,7 @@
   <meta name="description" content="Intercomunicador PTT P2P para motociclistas con WebRTC sobre 4G/5G">
   <title>RiderCom Mesh Pro</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/leaflet/leaflet.css">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
@@ -32,6 +33,16 @@
       </div>
       <button id="btnSettings" class="icon-btn" title="Configurar">⚙️</button>
     </header>
+
+    <!-- NAVIGATION TABS -->
+    <nav class="nav-tabs" id="navTabs">
+      <button id="tabIntercom" class="nav-tab-btn active" type="button">
+        <span class="tab-icon">📻</span> Intercom
+      </button>
+      <button id="tabMap" class="nav-tab-btn" type="button">
+        <span class="tab-icon">🗺️</span> Mapa de Ruta
+      </button>
+    </nav>
 
     <!-- PWA INSTALL BANNER -->
     <div id="pwaInstallBanner" class="pwa-install-banner hidden">
@@ -74,47 +85,79 @@
       </div>
     </div>
 
-    <!-- MAIN PTT SECTION -->
-    <main class="ptt-section">
-      <div class="ptt-header">
-        <h2 id="pttTitle" class="ptt-title">⚪ EN ESPERA</h2>
-        <p id="pttSubtitle" class="ptt-subtitle">Mantén presionado para hablar (doble toque = manos libres)</p>
-      </div>
-
-      <button id="pttButton" class="ptt-button" type="button">
-        <div class="mic-circle">
-          <span id="micIcon" class="mic-icon">🎙️</span>
-        </div>
-        <span id="pttLabel" class="ptt-label">PTT HABLAR</span>
-      </button>
-
-      <button id="btnToggleLock" class="lock-btn" type="button">
-        🔒 Fijar Manos Libres
-      </button>
-
-      <div class="ptt-footer-badges">
-        <div id="btnDspBadge" class="dsp-indicator" title="Toca para ajustar el filtro VOX / DSP">
-          <span id="dspDot" class="dsp-dot"></span>
-          <span id="dspLabel">VOX: Espera</span>
+    <!-- VIEW INTERCOM -->
+    <div id="viewIntercom" class="view-panel active">
+      <!-- MAIN PTT SECTION -->
+      <main class="ptt-section">
+        <div class="ptt-header">
+          <h2 id="pttTitle" class="ptt-title">⚪ EN ESPERA</h2>
+          <p id="pttSubtitle" class="ptt-subtitle">Mantén presionado para hablar (doble toque = manos libres)</p>
         </div>
 
-        <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
-          <span id="audioDeviceIcon">🎧</span>
-          <span id="audioDeviceLabel">Audio: Predeterminado</span>
+        <button id="pttButton" class="ptt-button" type="button">
+          <div class="mic-circle">
+            <span id="micIcon" class="mic-icon">🎙️</span>
+          </div>
+          <span id="pttLabel" class="ptt-label">PTT HABLAR</span>
+        </button>
+
+        <button id="btnToggleLock" class="lock-btn" type="button">
+          🔒 Fijar Manos Libres
+        </button>
+
+        <div class="ptt-footer-badges">
+          <div id="btnDspBadge" class="dsp-indicator" title="Toca para ajustar el filtro VOX / DSP">
+            <span id="dspDot" class="dsp-dot"></span>
+            <span id="dspLabel">VOX: Espera</span>
+          </div>
+
+          <div id="btnDeviceBadge" class="audio-device-badge" title="Toca para cambiar micrófono o auriculares Bluetooth">
+            <span id="audioDeviceIcon">🎧</span>
+            <span id="audioDeviceLabel">Audio: Predeterminado</span>
+          </div>
+        </div>
+      </main>
+
+      <!-- PEERS LIST -->
+      <section class="peers-section">
+        <div class="peers-header">
+          <span class="peers-title">🏍️ PILOTOS EN RUTA</span>
+          <span id="peersTotal" class="peers-counter">1 conectado</span>
+        </div>
+        <div id="peersList" class="peers-list">
+          <!-- Peers se renderizan dinámicamente -->
+        </div>
+      </section>
+    </div>
+
+    <!-- VIEW MAP GPS -->
+    <div id="viewMap" class="view-panel hidden">
+      <div class="map-hud-bar">
+        <div class="map-hud-left">
+          <span class="map-hud-pill">📍 <span id="mapGpsStatus">Iniciando GPS...</span></span>
+          <span class="map-hud-pill" id="mapSpeedPill">⚡ <span id="mapSpeed">0</span> km/h</span>
+        </div>
+        <div class="map-hud-actions">
+          <button id="btnCenterGps" class="map-action-btn" type="button" title="Centrar en mi ubicación">🎯 Mi GPS</button>
+          <button id="btnFitGroup" class="map-action-btn" type="button" title="Ver a todos los pilotos">👥 Grupo</button>
         </div>
       </div>
-    </main>
 
-    <!-- PEERS LIST -->
-    <section class="peers-section">
-      <div class="peers-header">
-        <span class="peers-title">🏍️ PILOTOS EN RUTA</span>
-        <span id="peersTotal" class="peers-counter">1 conectado</span>
+      <div class="map-wrapper">
+        <div id="mapContainer" class="map-container"></div>
+
+        <!-- FLOATING PTT ON MAP -->
+        <div id="floatingPttContainer" class="floating-ptt-container">
+          <button id="floatingPttBtn" class="floating-ptt-btn" type="button" title="Presiona para hablar">
+            <span id="floatMicIcon" class="floating-mic-icon">🎙️</span>
+            <span id="floatPttText" class="floating-ptt-text">PTT</span>
+          </button>
+          <button id="floatingLockBtn" class="floating-lock-btn" type="button" title="Fijar Manos Libres">
+            🔒 Manos Libres
+          </button>
+        </div>
       </div>
-      <div id="peersList" class="peers-list">
-        <!-- Peers se renderizan dinámicamente -->
-      </div>
-    </section>
+    </div>
 
     <!-- SETTINGS MODAL -->
     <div id="settingsModal" class="modal hidden">
@@ -196,6 +239,7 @@
     </div>
   </div>
 
+  <script src="/leaflet/leaflet.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

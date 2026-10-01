@@ -602,7 +602,14 @@ async function handleSignaling(msg) {
     case 'PEERS':
       for (const peer of msg.peers) {
         await createPeerConnection(peer.id, peer.nick, true);
+        if (peer.coords) {
+          updatePeerMapMarker(peer.id, peer.nick, peer.coords);
+        }
       }
+      break;
+
+    case 'PEER_LOCATION':
+      updatePeerMapMarker(msg.peerId, msg.nick, msg.coords);
       break;
 
     case 'PEER_JOINED':
@@ -812,6 +819,7 @@ function removePeer(peerId) {
     } catch (e) {}
     state.peers.delete(peerId);
     renderPeers();
+    removePeerMapMarker(peerId);
   }
   const audio = document.getElementById(`audio_${peerId}`);
   if (audio) {
@@ -833,6 +841,7 @@ function cleanupPeers() {
   });
   state.peers.clear();
   renderPeers();
+  clearAllPeerMapMarkers();
 }
 
 function setPeerTalking(peerId, isTalking) {
@@ -840,6 +849,7 @@ function setPeerTalking(peerId, isTalking) {
   if (peer) {
     peer.isTalking = isTalking;
     renderPeers();
+    updatePeerMapTalking(peerId, isTalking);
   }
 }
 
@@ -1164,6 +1174,36 @@ function updatePttUI() {
       elDspLabel.textContent = state.handsFreeMode === 'open' ? 'ML: Abierto' : 'VOX: En Reposo';
     }
   }
+
+  // Sincronizar mini PTT flotante en la vista del mapa
+  const elFloatBtn = document.getElementById('floatingPttBtn');
+  const elFloatLock = document.getElementById('floatingLockBtn');
+  const elFloatText = document.getElementById('floatPttText');
+  const elFloatMic = document.getElementById('floatMicIcon');
+
+  if (elFloatBtn) {
+    if (state.isTransmitting) {
+      elFloatBtn.className = 'floating-ptt-btn transmitting';
+      if (elFloatText) elFloatText.textContent = 'HABLANDO';
+      if (elFloatMic) elFloatMic.textContent = '📢';
+    } else {
+      elFloatBtn.className = 'floating-ptt-btn';
+      if (elFloatText) elFloatText.textContent = 'PTT';
+      if (elFloatMic) elFloatMic.textContent = '🎙️';
+    }
+  }
+
+  if (elFloatLock) {
+    if (state.isHandsFree) {
+      elFloatLock.className = 'floating-lock-btn locked';
+      elFloatLock.textContent = '🔓 Soltar ML';
+    } else {
+      elFloatLock.className = 'floating-lock-btn';
+      elFloatLock.textContent = '🔒 Manos Libres';
+    }
+  }
+
+  updateSelfMapTalking(state.isTransmitting);
 }
 
 // PTT Touch & Pointer Events
@@ -1380,5 +1420,292 @@ window.addEventListener('appinstalled', () => {
   deferredPrompt = null;
 });
 
+// ==========================================
+// MAPA GPS DE PARTICIPANTES EN RUTA (LEAFLET)
+// ==========================================
+let mapInstance = null;
+let myMapMarker = null;
+const peerMapMarkers = new Map(); // peerId -> { marker, coords, nick }
+let userGpsCoords = null;
+let lastSentLocationTs = 0;
+let hasCenteredOnGps = false;
+
+function initRiderMap() {
+  if (mapInstance) return;
+  const container = document.getElementById('mapContainer');
+  if (!container || typeof L === 'undefined') return;
+
+  const defaultLat = userGpsCoords ? userGpsCoords.lat : 40.4168;
+  const defaultLng = userGpsCoords ? userGpsCoords.lng : -3.7038;
+  const defaultZoom = userGpsCoords ? 15 : 12;
+
+  mapInstance = L.map('mapContainer', {
+    zoomControl: false,
+    attributionControl: false
+  }).setView([defaultLat, defaultLng], defaultZoom);
+
+  // Tiles oscuras CartoDB Dark Matter (alto contraste para motos)
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    subdomains: 'abcd'
+  }).addTo(mapInstance);
+
+  L.control.zoom({ position: 'topright' }).addTo(mapInstance);
+
+  if (userGpsCoords) {
+    updateMyMapMarker(userGpsCoords);
+  }
+}
+
+function createRiderIcon(nick, isSelf = false, isTalking = false, speed = 0) {
+  const pinClass = `rider-marker-pin${isSelf ? ' self' : ''}${isTalking ? ' talking' : ''}`;
+  const labelClass = `rider-marker-label${isSelf ? ' self' : ''}`;
+  const speedHtml = speed > 3 ? `<span class="rider-speed-tag">${Math.round(speed)}k</span>` : '';
+  const iconEmoji = isSelf ? '🏍️' : '🛵';
+
+  return L.divIcon({
+    className: 'custom-rider-icon',
+    html: `
+      <div class="rider-map-marker">
+        <div class="${pinClass}">${iconEmoji}</div>
+        <div class="${labelClass}">${nick}${speedHtml}</div>
+      </div>
+    `,
+    iconSize: [60, 60],
+    iconAnchor: [30, 30]
+  });
+}
+
+function updateMyMapMarker(coords) {
+  if (!mapInstance || typeof L === 'undefined') return;
+
+  const latLng = [coords.lat, coords.lng];
+  const isTalking = state.isTransmitting;
+  const icon = createRiderIcon(`${state.nick} (Tú)`, true, isTalking, coords.speed);
+
+  if (!myMapMarker) {
+    myMapMarker = L.marker(latLng, { icon, zIndexOffset: 1000 }).addTo(mapInstance);
+    myMapMarker.bindPopup(`<b>${state.nick} (Tú)</b><br>⚡ Velocidad: ${Math.round(coords.speed || 0)} km/h`);
+  } else {
+    myMapMarker.setLatLng(latLng);
+    myMapMarker.setIcon(icon);
+  }
+
+  if (!hasCenteredOnGps) {
+    mapInstance.setView(latLng, 15);
+    hasCenteredOnGps = true;
+  }
+}
+
+function updatePeerMapMarker(peerId, nick, coords) {
+  if (!mapInstance || typeof L === 'undefined' || !coords || coords.lat == null) return;
+
+  const peer = state.peers.get(peerId);
+  const isTalking = peer ? peer.isTalking : false;
+  const latLng = [coords.lat, coords.lng];
+  const icon = createRiderIcon(nick, false, isTalking, coords.speed);
+
+  let entry = peerMapMarkers.get(peerId);
+  if (!entry) {
+    const marker = L.marker(latLng, { icon }).addTo(mapInstance);
+    marker.bindPopup(`<b>🏍️ ${nick}</b><br>⚡ Velocidad: ${Math.round(coords.speed || 0)} km/h<br><small>En sala: ${state.room}</small>`);
+    peerMapMarkers.set(peerId, { marker, coords, nick });
+  } else {
+    entry.coords = coords;
+    entry.nick = nick;
+    entry.marker.setLatLng(latLng);
+    entry.marker.setIcon(icon);
+    entry.marker.setPopupContent(`<b>🏍️ ${nick}</b><br>⚡ Velocidad: ${Math.round(coords.speed || 0)} km/h<br><small>En sala: ${state.room}</small>`);
+  }
+}
+
+function updatePeerMapTalking(peerId, isTalking) {
+  const entry = peerMapMarkers.get(peerId);
+  if (entry && entry.coords) {
+    entry.marker.setIcon(createRiderIcon(entry.nick, false, isTalking, entry.coords.speed));
+  }
+}
+
+function updateSelfMapTalking(isTalking) {
+  if (myMapMarker && userGpsCoords) {
+    myMapMarker.setIcon(createRiderIcon(`${state.nick} (Tú)`, true, isTalking, userGpsCoords.speed));
+  }
+}
+
+function removePeerMapMarker(peerId) {
+  const entry = peerMapMarkers.get(peerId);
+  if (entry) {
+    if (mapInstance) mapInstance.removeLayer(entry.marker);
+    peerMapMarkers.delete(peerId);
+  }
+}
+
+function clearAllPeerMapMarkers() {
+  peerMapMarkers.forEach((entry) => {
+    if (mapInstance) mapInstance.removeLayer(entry.marker);
+  });
+  peerMapMarkers.clear();
+}
+
+function centerOnMyGps() {
+  if (userGpsCoords && mapInstance) {
+    mapInstance.setView([userGpsCoords.lat, userGpsCoords.lng], 16, { animate: true });
+  } else {
+    alert('Obteniendo señal GPS... Asegúrate de otorgar permisos de ubicación en tu navegador.');
+  }
+}
+
+function fitGroupBounds() {
+  if (!mapInstance || typeof L === 'undefined') return;
+  const latLngs = [];
+  if (userGpsCoords) latLngs.push([userGpsCoords.lat, userGpsCoords.lng]);
+  peerMapMarkers.forEach((entry) => {
+    if (entry.coords) latLngs.push([entry.coords.lat, entry.coords.lng]);
+  });
+
+  if (latLngs.length === 1) {
+    mapInstance.setView(latLngs[0], 16, { animate: true });
+  } else if (latLngs.length > 1) {
+    const bounds = L.latLngBounds(latLngs);
+    mapInstance.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: true });
+  } else {
+    alert('No hay otros pilotos con ubicación activa en esta sala aún.');
+  }
+}
+
+// GPS Tracking en vivo (optimizado para bajo consumo de batería y datos)
+function startGpsTracking() {
+  if (!('geolocation' in navigator)) {
+    const el = document.getElementById('mapGpsStatus');
+    if (el) el.textContent = 'GPS no soportado';
+    return;
+  }
+
+  const elGpsStatus = document.getElementById('mapGpsStatus');
+  const elSpeed = document.getElementById('mapSpeed');
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude, longitude, speed, heading, accuracy } = pos.coords;
+      const speedKmh = speed != null && speed > 0 ? Math.round(speed * 3.6) : 0;
+
+      userGpsCoords = {
+        lat: latitude,
+        lng: longitude,
+        speed: speedKmh,
+        heading: heading || 0,
+        accuracy: accuracy || 0
+      };
+
+      if (elGpsStatus) elGpsStatus.textContent = `GPS ±${Math.round(accuracy || 0)}m`;
+      if (elSpeed) elSpeed.textContent = speedKmh;
+
+      if (mapInstance) {
+        updateMyMapMarker(userGpsCoords);
+      }
+
+      // Enviar coordenadas por WebSocket cada 3.5s o cuando se mueva
+      const now = Date.now();
+      if (now - lastSentLocationTs > 3500 && state.ws && state.ws.readyState === WebSocket.OPEN) {
+        lastSentLocationTs = now;
+        state.ws.send(JSON.stringify({
+          type: 'LOCATION',
+          coords: userGpsCoords
+        }));
+      }
+    },
+    (err) => {
+      console.warn('[GPS] Estado de geolocalización:', err.message);
+      if (elGpsStatus) elGpsStatus.textContent = 'GPS en espera';
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 3000,
+      timeout: 12000
+    }
+  );
+}
+
+// Pestañas Navigation Tabs
+function setupNavigationTabs() {
+  const btnTabIntercom = document.getElementById('tabIntercom');
+  const btnTabMap = document.getElementById('tabMap');
+  const viewIntercom = document.getElementById('viewIntercom');
+  const viewMap = document.getElementById('viewMap');
+
+  if (!btnTabIntercom || !btnTabMap || !viewIntercom || !viewMap) return;
+
+  btnTabIntercom.addEventListener('click', () => {
+    btnTabIntercom.classList.add('active');
+    btnTabMap.classList.remove('active');
+    viewIntercom.classList.remove('hidden');
+    viewIntercom.classList.add('active');
+    viewMap.classList.add('hidden');
+    viewMap.classList.remove('active');
+  });
+
+  btnTabMap.addEventListener('click', () => {
+    btnTabMap.classList.add('active');
+    btnTabIntercom.classList.remove('active');
+    viewMap.classList.remove('hidden');
+    viewMap.classList.add('active');
+    viewIntercom.classList.add('hidden');
+    viewIntercom.classList.remove('active');
+
+    // Inicializar mapa si es la primera vez y refrescar tamaño
+    initRiderMap();
+    setTimeout(() => {
+      if (mapInstance) {
+        mapInstance.invalidateSize();
+        if (userGpsCoords) {
+          mapInstance.setView([userGpsCoords.lat, userGpsCoords.lng]);
+        }
+      }
+    }, 150);
+  });
+
+  // Botones de control del mapa
+  const btnCenterGps = document.getElementById('btnCenterGps');
+  if (btnCenterGps) btnCenterGps.addEventListener('click', centerOnMyGps);
+
+  const btnFitGroup = document.getElementById('btnFitGroup');
+  if (btnFitGroup) btnFitGroup.addEventListener('click', fitGroupBounds);
+
+  // Floating PTT Controls en el Mapa
+  const floatingPttBtn = document.getElementById('floatingPttBtn');
+  const floatingLockBtn = document.getElementById('floatingLockBtn');
+
+  if (floatingPttBtn) {
+    floatingPttBtn.addEventListener('pointerdown', async (e) => {
+      e.preventDefault();
+      await getLocalStream();
+      state.isManualPtt = true;
+      syncTransmissionState();
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (state.isManualPtt) {
+        state.isManualPtt = false;
+        syncTransmissionState();
+      }
+    });
+  }
+
+  if (floatingLockBtn) {
+    floatingLockBtn.addEventListener('click', async () => {
+      await getLocalStream();
+      state.isHandsFree = !state.isHandsFree;
+      if (!state.isHandsFree) {
+        state.isVoiceActive = false;
+        state.isFilteringNoise = false;
+      }
+      syncTransmissionState();
+    });
+  }
+}
+
 // Start
+setupNavigationTabs();
+startGpsTracking();
 connect();
+
